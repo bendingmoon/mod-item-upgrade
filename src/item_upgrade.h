@@ -63,6 +63,8 @@ public:
 
         Identifier() : id(0), optionIcon(GOSSIP_ICON_INTERACT_1) {}
 
+        virtual ~Identifier() = default;
+
         virtual IdentifierType GetType() const
         {
             return BASE_IDENTIFIER;

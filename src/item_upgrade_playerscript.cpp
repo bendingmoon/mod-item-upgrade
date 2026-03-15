@@ -43,7 +43,8 @@ public:
             PLAYERHOOK_ON_CREATE_ITEM,
             PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
             PLAYERHOOK_ON_APPLY_WEAPON_DAMAGE,
-            PLAYERHOOK_ON_EQUIP
+            PLAYERHOOK_ON_EQUIP,
+            PLAYERHOOK_ON_AFTER_UPDATE_ATTACK_POWER_AND_DAMAGE
         }) {}
 
     void OnPlayerApplyItemModsBefore(Player* player, uint8 slot, bool /*apply*/, uint8 /*itemProtoStatNumber*/, uint32 statType, int32& val) override
@@ -141,6 +142,11 @@ public:
                     player->UpdateDamagePhysical(WeaponAttackType(attType));
             }
         }
+    }
+
+    void OnPlayerAfterUpdateAttackPowerAndDamage(Player* player, float& /*level*/, float& /*base_attPower*/ , float& /*attPowerMod*/, float& /*attPowerMultiplier*/, bool /*ranged*/) override
+    {
+        sItemUpgrade->RefreshWeaponSpeed(player);
     }
 };
 

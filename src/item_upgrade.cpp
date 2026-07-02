@@ -71,8 +71,6 @@ void ItemUpgrade::LoadConfig(bool reload)
 {
     cfg.Initialize();
     LoadAllowedStats(cfg.GetStringConfig(CONFIG_ITEM_UPGRADE_ALLOWED_STATS));
-    LoadWeaponUpgradePercents(weaponUpgradeStats, characterWeaponUpgradeData, cfg.GetStringConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_PERCENTS));
-    LoadWeaponUpgradePercents(weaponSpeedUpgradeStats, characterWeaponSpeedUpgradeData, cfg.GetStringConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_PERCENTS));
     if (reload)
     {
         BuildWeaponUpgradeReqs();
@@ -94,6 +92,9 @@ void ItemUpgrade::LoadFromDB(bool reload)
     LoadStatRequirements();
     LoadStatRequirementsOverrides();
 
+    LoadTiers();
+    LoadWeaponDmgRanks();
+    LoadWeaponSpdRanks();
     LoadUpgradeStats();
     if (!CheckDataValidity())
     {
@@ -438,7 +439,7 @@ void ItemUpgrade::LoadCharacterWeaponUpgradeData()
 
     uint32 oldMSTime = getMSTime();
 
-    QueryResult result = CharacterDatabase.Query("SELECT guid, item_guid, upgrade_perc FROM character_weapon_upgrade");
+    QueryResult result = CharacterDatabase.Query("SELECT guid, item_guid, stat_rank FROM character_weapon_upgrade");
     if (!result)
     {
         LOG_INFO("server.loading", ">> Loaded 0 character weapon item upgrades.");
@@ -453,23 +454,19 @@ void ItemUpgrade::LoadCharacterWeaponUpgradeData()
 
         uint32 guidLow = fields[0].Get<uint32>();
         ObjectGuid itemGuid = ObjectGuid::Create<HighGuid::Item>(fields[1].Get<uint32>());
-        float perc = fields[2].Get<float>();
+        uint16 statRank = fields[2].Get<uint16>();
 
         CharacterUpgrade characterUpgrade;
         characterUpgrade.guid = guidLow;
         characterUpgrade.itemGuid = itemGuid;
-        characterUpgrade.upgradeStat = FindWeaponUpgradeStat(weaponUpgradeStats, perc);
+        characterUpgrade.upgradeStat = _FindUpgradeStat(weaponUpgradeStats,
+            [&](const UpgradeStat& stat) { return stat.statRank == statRank; });
         if (characterUpgrade.upgradeStat == nullptr)
         {
-            characterUpgrade.upgradeStat = FindNearestWeaponUpgradeStat(weaponUpgradeStats, perc);
-            if (characterUpgrade.upgradeStat == nullptr) {
-                LOG_ERROR("sql.sql", "Table `character_weapon_upgrade` has invalid `upgrade_perc` {}, there is no other near percent that can be chosen, skip", perc);
-                continue;
-            }
-            else
-                LOG_INFO("sql.sql", "Table `character_weapon_upgrade` has invalid `upgrade_perc` {} but a near percentage was chosen: {}", perc, characterUpgrade.upgradeStat->statModPct);
+            LOG_ERROR("sql.sql", "Table `character_weapon_upgrade` has invalid `stat_rank` {}, skip", statRank);
+            continue;
         }
-        characterUpgrade.upgradeStatModPct = perc;
+        characterUpgrade.upgradeStatModPct = characterUpgrade.upgradeStat->statModPct;
         characterWeaponUpgradeData[guidLow].push_back(characterUpgrade);
         count++;
     } while (result->NextRow());
@@ -484,7 +481,7 @@ void ItemUpgrade::LoadCharacterWeaponSpeedUpgradeData()
 
     uint32 oldMSTime = getMSTime();
 
-    QueryResult result = CharacterDatabase.Query("SELECT guid, item_guid, upgrade_perc FROM character_weapon_speed_upgrade");
+    QueryResult result = CharacterDatabase.Query("SELECT guid, item_guid, stat_rank FROM character_weapon_speed_upgrade");
     if (!result)
     {
         LOG_INFO("server.loading", ">> Loaded 0 character weapon speed upgrades.");
@@ -499,29 +496,144 @@ void ItemUpgrade::LoadCharacterWeaponSpeedUpgradeData()
 
         uint32 guidLow = fields[0].Get<uint32>();
         ObjectGuid itemGuid = ObjectGuid::Create<HighGuid::Item>(fields[1].Get<uint32>());
-        float perc = fields[2].Get<float>();
+        uint16 statRank = fields[2].Get<uint16>();
 
         CharacterUpgrade characterUpgrade;
         characterUpgrade.guid = guidLow;
         characterUpgrade.itemGuid = itemGuid;
-        characterUpgrade.upgradeStat = FindWeaponUpgradeStat(weaponSpeedUpgradeStats, perc);
+        characterUpgrade.upgradeStat = _FindUpgradeStat(weaponSpeedUpgradeStats,
+            [&](const UpgradeStat& stat) { return stat.statRank == statRank; });
         if (characterUpgrade.upgradeStat == nullptr)
         {
-            characterUpgrade.upgradeStat = FindNearestWeaponUpgradeStat(weaponSpeedUpgradeStats, perc);
-            if (characterUpgrade.upgradeStat == nullptr) {
-                LOG_ERROR("sql.sql", "Table `character_weapon_speed_upgrade` has invalid `upgrade_perc` {}, there is no other near percent that can be chosen, skip", perc);
-                continue;
-            }
-            else
-                LOG_INFO("sql.sql", "Table `character_weapon_speed_upgrade` has invalid `upgrade_perc` {} but a near percentage was chosen: {}", perc, characterUpgrade.upgradeStat->statModPct);
+            LOG_ERROR("sql.sql", "Table `character_weapon_speed_upgrade` has invalid `stat_rank` {}, skip", statRank);
+            continue;
         }
-        characterUpgrade.upgradeStatModPct = perc;
+        characterUpgrade.upgradeStatModPct = characterUpgrade.upgradeStat->statModPct;
         characterWeaponSpeedUpgradeData[guidLow].push_back(characterUpgrade);
         count++;
     } while (result->NextRow());
 
     LOG_INFO("server.loading", ">> Loaded {} character weapon speed upgrades in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
+}
+
+void ItemUpgrade::LoadTiers()
+{
+    _tiers.clear();
+
+    QueryResult result = CharacterDatabase.Query("SELECT id, item_entry, tier, name, begin_rank, end_rank, "
+        "breakthrough_cost_type, breakthrough_cost_val1, breakthrough_cost_val2 FROM mod_item_upgrade_tiers ORDER BY item_entry, tier");
+    if (!result)
+    {
+        LOG_INFO("server.loading", ">> Loaded 0 item upgrade tiers.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        ItemTier tier;
+        tier.id = fields[0].Get<uint32>();
+        tier.itemEntry = fields[1].Get<uint32>();
+        tier.tier = fields[2].Get<uint8>();
+        tier.name = fields[3].Get<std::string>();
+        tier.beginRank = fields[4].Get<uint16>();
+        tier.endRank = fields[5].Get<uint16>();
+        tier.breakthroughCostType = fields[6].Get<uint8>();
+        tier.breakthroughCostVal1 = fields[7].Get<float>();
+        tier.breakthroughCostVal2 = fields[8].IsNull() ? 0.0f : fields[8].Get<float>();
+
+        _tiers.push_back(tier);
+        count++;
+    } while (result->NextRow());
+
+    LOG_INFO("server.loading", ">> Loaded {} item upgrade tiers.", count);
+}
+
+void ItemUpgrade::LoadWeaponDmgRanks()
+{
+    _weaponDmgRanks.clear();
+    weaponUpgradeStats.clear();
+
+    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2 "
+        "FROM mod_item_upgrade_weapon_dmg ORDER BY stat_rank");
+    if (!result)
+    {
+        LOG_INFO("server.loading", ">> Loaded 0 weapon damage upgrade ranks.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        WeaponUpgradeRank rank;
+        rank.id = fields[0].Get<uint32>();
+        rank.statModPct = fields[1].Get<float>();
+        rank.statRank = fields[2].Get<uint16>();
+        rank.reqType = fields[3].Get<uint8>();
+        rank.reqVal1 = fields[4].Get<float>();
+        rank.reqVal2 = fields[5].IsNull() ? 0.0f : fields[5].Get<float>();
+
+        _weaponDmgRanks.push_back(rank);
+
+        // Also populate legacy UpgradeStat container for backward compat
+        UpgradeStat stat;
+        stat.statId = rank.id;
+        stat.statType = 0;
+        stat.statModPct = rank.statModPct;
+        stat.statRank = rank.statRank;
+        weaponUpgradeStats.push_back(stat);
+
+        count++;
+    } while (result->NextRow());
+
+    LOG_INFO("server.loading", ">> Loaded {} weapon damage upgrade ranks.", count);
+}
+
+void ItemUpgrade::LoadWeaponSpdRanks()
+{
+    _weaponSpdRanks.clear();
+    weaponSpeedUpgradeStats.clear();
+
+    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2 "
+        "FROM mod_item_upgrade_weapon_spd ORDER BY stat_rank");
+    if (!result)
+    {
+        LOG_INFO("server.loading", ">> Loaded 0 weapon speed upgrade ranks.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        WeaponUpgradeRank rank;
+        rank.id = fields[0].Get<uint32>();
+        rank.statModPct = fields[1].Get<float>();
+        rank.statRank = fields[2].Get<uint16>();
+        rank.reqType = fields[3].Get<uint8>();
+        rank.reqVal1 = fields[4].Get<float>();
+        rank.reqVal2 = fields[5].IsNull() ? 0.0f : fields[5].Get<float>();
+
+        _weaponSpdRanks.push_back(rank);
+
+        // Also populate legacy UpgradeStat container for backward compat
+        UpgradeStat stat;
+        stat.statId = rank.id;
+        stat.statType = 0;
+        stat.statModPct = rank.statModPct;
+        stat.statRank = rank.statRank;
+        weaponSpeedUpgradeStats.push_back(stat);
+
+        count++;
+    } while (result->NextRow());
+
+    LOG_INFO("server.loading", ">> Loaded {} weapon speed upgrade ranks.", count);
 }
 
 bool ItemUpgrade::IsValidReqType(uint8 reqType) const
@@ -565,8 +677,9 @@ bool ItemUpgrade::ValidateReq(uint32 id, UpgradeStatReqType reqType, float val1,
         }
         case ItemUpgrade::REQ_TYPE_NONE:
             return true;
+        default:
+            return false;
     }
-    return false;
 }
 
 /*static*/ std::string ItemUpgrade::ItemIcon(const ItemTemplate* proto, uint32 width, uint32 height, int x, int y)
@@ -710,7 +823,7 @@ void ItemUpgrade::BuildUpgradableItemCatalogue(const Player* player, PagedDataTy
 
     std::vector<Item*> playerItems = GetPlayerItems(player, false);
     std::vector<Item*>::iterator iter = playerItems.begin();
-    for (iter; iter != playerItems.end(); ++iter)
+    for (; iter != playerItems.end(); ++iter)
     {
         bool valid = type == PAGED_DATA_TYPE_WEAPON_UPGRADE_ITEMS ? IsValidWeaponForUpgrade(*iter, player) : IsValidItemForUpgrade(*iter, player);
         if (valid)
@@ -808,6 +921,57 @@ bool ItemUpgrade::IsValidWeaponForSpeedUpgrade(const Item* item, const Player* p
         return false;
 
     return true;
+}
+
+bool ItemUpgrade::IsItemEntryUpgradeable(uint32 itemEntry) const
+{
+    const ItemTemplate* proto = sObjectMgr->GetItemTemplate(itemEntry);
+    if (!proto)
+        return false;
+
+    if (proto->Quality == ITEM_QUALITY_HEIRLOOM)
+        return false;
+
+    // Check allowed items list (empty = all items allowed)
+    if (!allowedItems.empty() && allowedItems.find(itemEntry) == allowedItems.end())
+        return false;
+
+    // Check blacklisted items
+    if (!blacklistedItems.empty() && blacklistedItems.find(itemEntry) != blacklistedItems.end())
+        return false;
+
+    // Check if item has any upgradeable stats
+    for (uint8 i = 0; i < proto->StatsCount; ++i)
+    {
+        if (proto->ItemStat[i].ItemStatValue > 0)
+        {
+            uint32 statType = proto->ItemStat[i].ItemStatType;
+            if (!IsAllowedStatType(statType))
+                continue;
+            for (const UpgradeStat& upgrade : upgradeStatList)
+            {
+                if (upgrade.statType == statType)
+                    return true;
+            }
+        }
+    }
+
+    // Check weapon damage upgrade
+    if (GetBoolConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE))
+    {
+        std::pair<float, float> dmg = GetItemProtoDamage(proto);
+        if (dmg.first > 0.0f && dmg.second > 0.0f)
+            return true;
+    }
+
+    // Check weapon speed upgrade
+    if (GetBoolConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED))
+    {
+        if (proto->Delay > 0)
+            return true;
+    }
+
+    return false;
 }
 
 void ItemUpgrade::AddItemToPagedData(const Item* item, const Player* player, PagedData& pagedData)
@@ -1618,8 +1782,8 @@ bool ItemUpgrade::HandlePurchaseWeaponUpgrade(Player* player, Item* item, const 
         [&](const CharacterUpgrade& upgrade) { return upgrade.itemGuid == item->GetGUID(); });
     upgrades.erase(citer, upgrades.end());
 
-    CharacterDatabase.Execute("REPLACE INTO {} (guid, item_guid, upgrade_perc) VALUES ({}, {}, {})", !speedUpgrade ? "character_weapon_upgrade" : "character_weapon_speed_upgrade",
-        player->GetGUID().GetCounter(), item->GetGUID().GetCounter(), upgrade->statModPct);
+    CharacterDatabase.Execute("REPLACE INTO {} (guid, item_guid, stat_rank) VALUES ({}, {}, {})", !speedUpgrade ? "character_weapon_upgrade" : "character_weapon_speed_upgrade",
+        player->GetGUID().GetCounter(), item->GetGUID().GetCounter(), upgrade->statRank);
 
     CharacterUpgrade newUpgrade;
     newUpgrade.guid = player->GetGUID().GetCounter();
@@ -1640,6 +1804,14 @@ bool ItemUpgrade::PurchaseUpgrade(Player* player)
     Item* item = player->GetItemByGuid(pagedData.item.guid);
     if (!item)
         return false;
+
+    // Tier range check
+    const ItemTier* currentTier = GetCurrentTier(player, item);
+    if (currentTier && !CanPurchaseRankInTier(currentTier, pagedData.upgradeStat->statRank))
+    {
+        SendMessage(player, "You have reached the maximum rank for this tier. Breakthrough to continue upgrading.");
+        return true;
+    }
 
     if (!MeetsRequirement(player, pagedData.upgradeStat, item))
     {
@@ -1677,6 +1849,14 @@ bool ItemUpgrade::PurchaseWeaponUpgrade(Player* player)
     if (!IsValidWeaponForUpgrade(item, player))
         return false;
 
+    // Tier range check
+    const ItemTier* currentTier = GetCurrentTier(player, item);
+    if (currentTier && !CanPurchaseRankInTier(currentTier, pagedData.upgradeStat->statRank))
+    {
+        SendMessage(player, "You have reached the maximum rank for this tier. Breakthrough to continue upgrading.");
+        return true;
+    }
+
     if (!MeetsWeaponUpgradeRequirement(player))
     {
         SendMessage(player, "You do not meet the requirements to buy this upgrade.");
@@ -1713,6 +1893,14 @@ bool ItemUpgrade::PurchaseWeaponSpeedUpgrade(Player* player)
     if (!IsValidWeaponForSpeedUpgrade(item, player))
         return false;
 
+    // Tier range check
+    const ItemTier* currentTier = GetCurrentTier(player, item);
+    if (currentTier && !CanPurchaseRankInTier(currentTier, pagedData.upgradeStat->statRank))
+    {
+        SendMessage(player, "You have reached the maximum rank for this tier. Breakthrough to continue upgrading.");
+        return true;
+    }
+
     if (!MeetsWeaponSpeedUpgradeRequirement(player))
     {
         SendMessage(player, "You do not meet the requirements to buy this upgrade.");
@@ -1743,6 +1931,20 @@ bool ItemUpgrade::PurchaseUpgradeBulk(Player* player)
     std::unordered_map<uint32, const UpgradeStat*> upgrades = FindAllUpgradeableRanks(player, item, pagedData.pct);
     if (upgrades.empty())
         return false;
+
+    // Tier range check: ensure all target ranks are within current tier
+    const ItemTier* currentTierBulk = GetCurrentTier(player, item);
+    if (currentTierBulk)
+    {
+        for (const auto& [statType, upgrade] : upgrades)
+        {
+            if (!CanPurchaseRankInTier(currentTierBulk, upgrade->statRank))
+            {
+                SendMessage(player, "Some upgrades exceed the current tier limit. Breakthrough to continue upgrading.");
+                return true;
+            }
+        }
+    }
 
     StatRequirementContainer reqs = BuildBulkRequirements(upgrades, item);
     if (!MeetsRequirement(player, &reqs))
@@ -1865,6 +2067,10 @@ void ItemUpgrade::HandleItemRemove(Player* player, Item* item)
             RemoveWeaponSpeedUpgrade(player, item);
         player->_ApplyItemMods(item, item->GetSlot(), true);
 
+        // Clean up tier data
+        CharacterDatabase.Execute("DELETE FROM character_item_tier WHERE guid = {} AND item_guid = {}",
+            player->GetGUID().GetCounter(), item->GetGUID().GetCounter());
+
         RefreshWeaponSpeed(player);
     }
 }
@@ -1900,6 +2106,8 @@ void ItemUpgrade::HandleCharacterRemove(uint32 guid)
     characterUpgradeData[guid].clear();
     characterWeaponUpgradeData[guid].clear();
     characterWeaponSpeedUpgradeData[guid].clear();
+
+    CharacterDatabase.Execute("DELETE FROM character_item_tier WHERE guid = {}", guid);
 }
 
 void ItemUpgrade::BuildRequirementsPage(const Player* player, PagedData& pagedData, const StatRequirementContainer* reqs) const
@@ -1940,6 +2148,8 @@ void ItemUpgrade::BuildRequirementsPage(const Player* player, PagedData& pagedDa
                         oss << " - " << (uint32)req.reqVal2 << "x";
                     break;
                 }
+                default:
+                    break;
             }
 
             std::string missing;
@@ -1958,6 +2168,8 @@ void ItemUpgrade::BuildRequirementsPage(const Player* player, PagedData& pagedDa
                         break;
                     case REQ_TYPE_ITEM:
                         missing = "missing " + Acore::ToString<uint32>((uint32)req.reqVal2 - player->GetItemCount((uint32)req.reqVal1, true)) + " items";
+                        break;
+                    default:
                         break;
                 }
             }
@@ -2352,9 +2564,9 @@ bool ItemUpgrade::MeetsRequirement(const Player* player, const UpgradeStatReq& r
             return player->HasItemCount((uint32)req.reqVal1, (uint32)req.reqVal2, true);
         case REQ_TYPE_NONE:
             return true;
+        default:
+            return false;
     }
-
-    return false;
 }
 
 bool ItemUpgrade::MeetsRequirement(const Player* player, const UpgradeStat* upgradeStat, const Item* item) const
@@ -2400,18 +2612,38 @@ void ItemUpgrade::TakeRequirements(Player* player, const StatRequirementContaine
             case REQ_TYPE_ITEM:
                 player->DestroyItemCount((uint32)req.reqVal1, (uint32)req.reqVal2, true);
                 break;
+            default:
+                break;
         }
     }
 }
 
 void ItemUpgrade::TakeWeaponUpgradeRequirements(Player* player)
 {
-    TakeRequirements(player, &weaponUpgradeReqs);
+    PagedData& pagedData = GetPagedData(player);
+    if (!pagedData.upgradeStat)
+        return;
+
+    const WeaponUpgradeRank* rank = FindWeaponDmgRank(pagedData.upgradeStat->statRank);
+    if (!rank)
+        return;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(rank);
+    TakeRequirements(player, &reqs);
 }
 
 void ItemUpgrade::TakeWeaponSpeedUpgradeRequirements(Player* player)
 {
-    TakeRequirements(player, &weaponSpeedUpgradeReqs);
+    PagedData& pagedData = GetPagedData(player);
+    if (!pagedData.upgradeStat)
+        return;
+
+    const WeaponUpgradeRank* rank = FindWeaponSpdRank(pagedData.upgradeStat->statRank);
+    if (!rank)
+        return;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(rank);
+    TakeRequirements(player, &reqs);
 }
 
 void ItemUpgrade::BuildStatsUpgradeCatalogue(const Player* player, const Item* item)
@@ -2649,6 +2881,8 @@ ItemUpgrade::StatRequirementContainer ItemUpgrade::BuildBulkRequirements(const s
                     break;
                 case REQ_TYPE_ITEM:
                     itemMap[(uint32)statReq.reqVal1] += (uint32)statReq.reqVal2;
+                    break;
+                default:
                     break;
             }
         }
@@ -3057,7 +3291,7 @@ void ItemUpgrade::HandleDataReload(Player* player, bool apply)
 {
     std::vector<Item*> playerItems = GetPlayerItems(player, true);
     std::vector<Item*>::iterator iter = playerItems.begin();
-    for (iter; iter != playerItems.end(); ++iter)
+    for (; iter != playerItems.end(); ++iter)
     {
         Item* item = *iter;
 
@@ -3290,7 +3524,7 @@ void ItemUpgrade::UpdateVisualCache(Player* player)
     std::map<uint32, std::vector<ItemUpgradeInfo>> entryUpgradeMap;
     std::vector<Item*> items = GetPlayerItems(player, true);
     std::vector<Item*>::const_iterator citer = items.begin();
-    for (citer; citer != items.end(); ++citer)
+    for (; citer != items.end(); ++citer)
     {
         const Item* item = *citer;
         ItemUpgradeInfo upgradeInfo;
@@ -3539,6 +3773,8 @@ bool ItemUpgrade::TryRefundRequirements(Player* player, const StatRequirementCon
                 if (!TryAddItem(player, (uint32)r.reqVal1, (uint32)r.reqVal2, false))
                     return false;
                 break;
+            default:
+                break;
         }
     }
 
@@ -3557,6 +3793,8 @@ bool ItemUpgrade::TryRefundRequirements(Player* player, const StatRequirementCon
                 break;
             case REQ_TYPE_ITEM:
                 TryAddItem(player, (uint32)r.reqVal1, (uint32)r.reqVal2, true);
+                break;
+            default:
                 break;
         }
     }
@@ -3862,58 +4100,375 @@ void ItemUpgrade::LoadWeaponUpgradePercents(UpgradeStatContainer& upgradeStats, 
 
 bool ItemUpgrade::MeetsWeaponUpgradeRequirement(const Player* player) const
 {
-    return MeetsRequirement(player, &weaponUpgradeReqs);
+    const PagedData& pagedData = const_cast<ItemUpgrade*>(this)->GetPagedData(const_cast<Player*>(player));
+    if (!pagedData.upgradeStat)
+        return false;
+
+    const WeaponUpgradeRank* rank = const_cast<ItemUpgrade*>(this)->FindWeaponDmgRank(pagedData.upgradeStat->statRank);
+    if (!rank)
+        return false;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(rank);
+    return MeetsRequirement(player, &reqs);
 }
 
 bool ItemUpgrade::MeetsWeaponSpeedUpgradeRequirement(const Player* player) const
 {
-    return MeetsRequirement(player, &weaponSpeedUpgradeReqs);
+    const PagedData& pagedData = const_cast<ItemUpgrade*>(this)->GetPagedData(const_cast<Player*>(player));
+    if (!pagedData.upgradeStat)
+        return false;
+
+    const WeaponUpgradeRank* rank = const_cast<ItemUpgrade*>(this)->FindWeaponSpdRank(pagedData.upgradeStat->statRank);
+    if (!rank)
+        return false;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(rank);
+    return MeetsRequirement(player, &reqs);
 }
 
 void ItemUpgrade::BuildWeaponUpgradeReqs()
 {
-    weaponUpgradeReqs.clear();
-
-    const ItemTemplate* tokenProto = sObjectMgr->GetItemTemplate(GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_TOKEN));
-    if (tokenProto != nullptr)
-    {
-        UpgradeStatReq tokenReq;
-        tokenReq.reqType = REQ_TYPE_ITEM;
-        tokenReq.reqVal1 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_TOKEN);
-        tokenReq.reqVal2 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_TOKEN_COUNT);
-        weaponUpgradeReqs.push_back(tokenReq);
-    }
-
-    if (GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_MONEY) > 0)
-    {
-        UpgradeStatReq moneyReq;
-        moneyReq.reqType = REQ_TYPE_COPPER;
-        moneyReq.reqVal1 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_DAMAGE_MONEY);
-        weaponUpgradeReqs.push_back(moneyReq);
-    }
+    // No-op: weapon damage upgrade costs are now rank-specific from DB.
+    // Use BuildWeaponRankReqs() to get requirements for a specific rank.
 }
 
 void ItemUpgrade::BuildWeaponSpeedUpgradeReqs()
 {
-    weaponSpeedUpgradeReqs.clear();
+    // No-op: weapon speed upgrade costs are now rank-specific from DB.
+    // Use BuildWeaponRankReqs() to get requirements for a specific rank.
+}
 
-    const ItemTemplate* tokenProto = sObjectMgr->GetItemTemplate(GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_TOKEN));
-    if (tokenProto != nullptr)
+ItemUpgrade::StatRequirementContainer ItemUpgrade::BuildWeaponRankReqs(const WeaponUpgradeRank* rank) const
+{
+    StatRequirementContainer reqs;
+    if (!rank || rank->reqType == REQ_TYPE_NONE)
+        return reqs;
+
+    UpgradeStatReq req;
+    req.reqType = static_cast<UpgradeStatReqType>(rank->reqType);
+    req.reqVal1 = rank->reqVal1;
+    req.reqVal2 = rank->reqVal2;
+    reqs.push_back(req);
+
+    return reqs;
+}
+
+const ItemUpgrade::WeaponUpgradeRank* ItemUpgrade::FindWeaponDmgRank(uint16 statRank) const
+{
+    for (const auto& rank : _weaponDmgRanks)
+        if (rank.statRank == statRank)
+            return &rank;
+    return nullptr;
+}
+
+const ItemUpgrade::WeaponUpgradeRank* ItemUpgrade::FindWeaponSpdRank(uint16 statRank) const
+{
+    for (const auto& rank : _weaponSpdRanks)
+        if (rank.statRank == statRank)
+            return &rank;
+    return nullptr;
+}
+
+// ================================================================
+// Tier System
+// ================================================================
+
+const ItemUpgrade::ItemTier* ItemUpgrade::GetItemTier(uint32 itemEntry) const
+{
+    // GetItemTier without tier number returns the first tier for the given item.
+    // For specific tier lookup, use the tier-aware lookup in GetCurrentTier/GetNextTier.
+
+    // First try item-specific configuration
+    for (const auto& tier : _tiers)
+        if (tier.itemEntry == itemEntry && itemEntry != 0)
+            return &tier;
+
+    // Fallback to global default (item_entry = 0)
+    for (const auto& tier : _tiers)
+        if (tier.itemEntry == 0)
+            return &tier;
+
+    return nullptr;
+}
+
+uint8 ItemUpgrade::GetCurrentTierNum(const Player* player, const Item* item) const
+{
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT tier FROM character_item_tier WHERE guid = {} AND item_guid = {}",
+        player->GetGUID().GetCounter(), item->GetGUID().GetCounter());
+
+    if (result)
     {
-        UpgradeStatReq tokenReq;
-        tokenReq.reqType = REQ_TYPE_ITEM;
-        tokenReq.reqVal1 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_TOKEN);
-        tokenReq.reqVal2 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_TOKEN_COUNT);
-        weaponSpeedUpgradeReqs.push_back(tokenReq);
+        Field* fields = result->Fetch();
+        return fields[0].Get<uint8>();
     }
 
-    if (GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_MONEY) > 0)
+    return 1; // Default to tier 1
+}
+
+const ItemUpgrade::ItemTier* ItemUpgrade::GetCurrentTier(const Player* player, const Item* item) const
+{
+    uint8 tierNum = GetCurrentTierNum(player, item);
+
+    // First try item-specific configuration for this tier
+    for (const auto& tier : _tiers)
+        if (tier.tier == tierNum && tier.itemEntry == item->GetEntry())
+            return &tier;
+
+    // Fallback to global default for this tier
+    for (const auto& tier : _tiers)
+        if (tier.tier == tierNum && tier.itemEntry == 0)
+            return &tier;
+
+    // Last resort: any tier with matching number
+    for (const auto& tier : _tiers)
+        if (tier.tier == tierNum)
+            return &tier;
+
+    return nullptr;
+}
+
+const ItemUpgrade::ItemTier* ItemUpgrade::GetNextTier(const Player* player, const Item* item) const
+{
+    uint8 currentTierNum = GetCurrentTierNum(player, item);
+    uint8 nextTierNum = currentTierNum + 1;
+
+    int32 maxTier = GetIntConfig(CONFIG_ITEM_UPGRADE_MAX_TIER);
+    if (nextTierNum > maxTier)
+        return nullptr;
+
+    // First try item-specific configuration
+    for (const auto& tier : _tiers)
+        if (tier.tier == nextTierNum && tier.itemEntry == item->GetEntry())
+            return &tier;
+
+    // Fallback to global default
+    for (const auto& tier : _tiers)
+        if (tier.tier == nextTierNum && tier.itemEntry == 0)
+            return &tier;
+
+    return nullptr;
+}
+
+bool ItemUpgrade::CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const
+{
+    if (!tier)
+        return false;
+    return tier->InRange(rank);
+}
+
+bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier,
+    bool checkWeaponDmg, bool checkWeaponSpd) const
+{
+    if (!tier)
+        return true;
+
+    // Check stat upgrades: at least one stat type must be at endRank
+    // (all upgrade ranks share the same scale per tier)
+    bool statMaxed = false;
+    std::vector<const UpgradeStat*> statUpgrades = const_cast<ItemUpgrade*>(this)->FindUpgradesForItem(player, item);
+    if (statUpgrades.empty())
     {
-        UpgradeStatReq moneyReq;
-        moneyReq.reqType = REQ_TYPE_COPPER;
-        moneyReq.reqVal1 = (float)GetIntConfig(CONFIG_ITEM_UPGRADE_WEAPON_SPEED_MONEY);
-        weaponSpeedUpgradeReqs.push_back(moneyReq);
+        // No stat upgrades purchased yet - not maxed if item has upgradable stats
+        statMaxed = false;
     }
+    else
+    {
+        for (const auto* upgrade : statUpgrades)
+        {
+            if (upgrade->statRank >= tier->endRank)
+            {
+                statMaxed = true;
+                break;
+            }
+        }
+    }
+
+    // Check weapon damage
+    bool weaponDmgMaxed = true;
+    if (checkWeaponDmg && IsValidWeaponForUpgrade(item, player))
+    {
+        const UpgradeStat* dmgUpgrade = const_cast<ItemUpgrade*>(this)->FindUpgradeForWeaponDamage(player, item);
+        weaponDmgMaxed = (dmgUpgrade && dmgUpgrade->statRank >= tier->endRank);
+    }
+
+    // Check weapon speed
+    bool weaponSpdMaxed = true;
+    if (checkWeaponSpd && IsValidWeaponForSpeedUpgrade(item, player))
+    {
+        const UpgradeStat* spdUpgrade = const_cast<ItemUpgrade*>(this)->FindUpgradeForWeaponSpeed(player, item);
+        weaponSpdMaxed = (spdUpgrade && spdUpgrade->statRank >= tier->endRank);
+    }
+
+    return statMaxed && weaponDmgMaxed && weaponSpdMaxed;
+}
+
+bool ItemUpgrade::CanBreakthrough(const Player* player, const Item* item) const
+{
+    if (!IsAllowedItem(item) || IsBlacklistedItem(item))
+        return false;
+
+    const ItemTier* currentTier = const_cast<ItemUpgrade*>(this)->GetCurrentTier(player, item);
+    if (!currentTier)
+        return false;
+
+    const ItemTier* nextTier = const_cast<ItemUpgrade*>(this)->GetNextTier(player, item);
+    if (!nextTier)
+        return false;
+
+    // All categories must be maxed in current tier
+    if (!const_cast<ItemUpgrade*>(this)->IsCategoryMaxedInTier(player, item, currentTier, true, true))
+        return false;
+
+    // Check breakthrough cost
+    StatRequirementContainer reqs;
+    UpgradeStatReq req;
+    req.reqType = static_cast<UpgradeStatReqType>(nextTier->breakthroughCostType);
+    req.reqVal1 = nextTier->breakthroughCostVal1;
+    req.reqVal2 = nextTier->breakthroughCostVal2;
+    reqs.push_back(req);
+
+    return const_cast<ItemUpgrade*>(this)->MeetsRequirement(player, &reqs);
+}
+
+bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
+{
+    if (!CanBreakthrough(player, item))
+    {
+        SendMessage(player, "You cannot breakthrough this item yet.");
+        return false;
+    }
+
+    const ItemTier* nextTier = GetNextTier(player, item);
+    if (!nextTier)
+        return false;
+
+    // Take breakthrough cost
+    StatRequirementContainer reqs;
+    UpgradeStatReq req;
+    req.reqType = static_cast<UpgradeStatReqType>(nextTier->breakthroughCostType);
+    req.reqVal1 = nextTier->breakthroughCostVal1;
+    req.reqVal2 = nextTier->breakthroughCostVal2;
+    reqs.push_back(req);
+    TakeRequirements(player, &reqs);
+
+    // Update tier in database
+    CharacterDatabase.Execute("REPLACE INTO character_item_tier (guid, item_guid, tier) VALUES ({}, {}, {})",
+        player->GetGUID().GetCounter(), item->GetGUID().GetCounter(), nextTier->tier);
+
+    VisualFeedback(player);
+    SendMessage(player, "Item has broken through to " + nextTier->name + "!");
+
+    return true;
+}
+
+bool ItemUpgrade::PurchaseStatUpgrade(Player* player, Item* item, uint32 statType)
+{
+    if (!IsAllowedItem(item) || IsBlacklistedItem(item))
+        return false;
+    if (!IsAllowedStatType(statType))
+        return false;
+    if (!IsValidItemForUpgrade(item, player))
+        return false;
+
+    const ItemTier* tier = GetCurrentTier(player, item);
+    if (!tier)
+        return false;
+
+    const UpgradeStat* current = FindUpgradeForItem(player, item, statType);
+    uint16 curRank = current ? current->statRank : 0;
+
+    // Already maxed in this tier?
+    if (curRank >= tier->endRank)
+        return false;
+
+    uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
+    if (!CanPurchaseRankInTier(tier, nextRank))
+        return false;
+
+    const UpgradeStat* nextStat = FindUpgradeStat(statType, nextRank);
+    if (!nextStat)
+        return false;
+
+    if (!MeetsRequirement(player, nextStat, item))
+        return false;
+
+    TakeRequirements(player, nextStat, item);
+    return HandlePurchaseRank(player, item, nextStat);
+}
+
+bool ItemUpgrade::PurchaseWeaponDmgUpgrade(Player* player, Item* item)
+{
+    if (!IsAllowedItem(item) || IsBlacklistedItem(item))
+        return false;
+    if (!IsValidWeaponForUpgrade(item, player))
+        return false;
+
+    const ItemTier* tier = GetCurrentTier(player, item);
+    if (!tier)
+        return false;
+
+    const UpgradeStat* current = FindUpgradeForWeaponDamage(player, item);
+    uint16 curRank = current ? current->statRank : 0;
+    if (curRank >= tier->endRank)
+        return false;
+
+    uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
+    if (!CanPurchaseRankInTier(tier, nextRank))
+        return false;
+
+    const WeaponUpgradeRank* nextWpn = FindWeaponDmgRank(nextRank);
+    if (!nextWpn)
+        return false;
+
+    const UpgradeStat* nextStat = _FindUpgradeStat(weaponUpgradeStats,
+        [&](const UpgradeStat& s) { return s.statRank == nextRank; });
+    if (!nextStat)
+        return false;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(nextWpn);
+    if (!MeetsRequirement(player, &reqs))
+        return false;
+
+    TakeRequirements(player, &reqs);
+    return HandlePurchaseWeaponUpgrade(player, item, nextStat, false);
+}
+
+bool ItemUpgrade::PurchaseWeaponSpdUpgrade(Player* player, Item* item)
+{
+    if (!IsAllowedItem(item) || IsBlacklistedItem(item))
+        return false;
+    if (!IsValidWeaponForSpeedUpgrade(item, player))
+        return false;
+
+    const ItemTier* tier = GetCurrentTier(player, item);
+    if (!tier)
+        return false;
+
+    const UpgradeStat* current = FindUpgradeForWeaponSpeed(player, item);
+    uint16 curRank = current ? current->statRank : 0;
+    if (curRank >= tier->endRank)
+        return false;
+
+    uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
+    if (!CanPurchaseRankInTier(tier, nextRank))
+        return false;
+
+    const WeaponUpgradeRank* nextWpn = FindWeaponSpdRank(nextRank);
+    if (!nextWpn)
+        return false;
+
+    const UpgradeStat* nextStat = _FindUpgradeStat(weaponSpeedUpgradeStats,
+        [&](const UpgradeStat& s) { return s.statRank == nextRank; });
+    if (!nextStat)
+        return false;
+
+    StatRequirementContainer reqs = BuildWeaponRankReqs(nextWpn);
+    if (!MeetsRequirement(player, &reqs))
+        return false;
+
+    TakeRequirements(player, &reqs);
+    return HandlePurchaseWeaponUpgrade(player, item, nextStat, true);
 }
 
 ItemUpgrade::ItemVisualsPriority ItemUpgrade::GetItemVisualsPriority() const

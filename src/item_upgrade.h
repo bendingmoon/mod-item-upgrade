@@ -181,6 +181,34 @@ public:
     };
     typedef std::vector<UpgradeStat> UpgradeStatContainer;
 
+    struct ItemTier
+    {
+        uint32 id;
+        uint32 itemEntry;       // 0 = global default
+        uint8 tier;             // 1, 2, 3...
+        std::string name;
+        uint16 beginRank;
+        uint16 endRank;
+        uint8 breakthroughCostType;  // 1=gold, 2=honor, 3=arena, 4=item
+        float breakthroughCostVal1;
+        float breakthroughCostVal2;
+
+        bool InRange(uint16 rank) const { return rank >= beginRank && rank <= endRank; }
+        bool IsMaxRank(uint16 rank) const { return rank >= endRank; }
+    };
+    typedef std::vector<ItemTier> ItemTierContainer;
+
+    struct WeaponUpgradeRank
+    {
+        uint32 id;
+        float statModPct;
+        uint16 statRank;
+        uint8 reqType;
+        float reqVal1;
+        float reqVal2;
+    };
+    typedef std::vector<WeaponUpgradeRank> WeaponUpgradeRankContainer;
+
     struct CharacterUpgrade
     {
         uint32 guid;
@@ -218,6 +246,25 @@ public:
     void LoadConfig(bool reload);
     void LoadFromDB(bool reload = false);
 
+    // Tier system
+    void LoadTiers();
+    void LoadWeaponDmgRanks();
+    void LoadWeaponSpdRanks();
+    const ItemTier* GetItemTier(uint32 itemEntry) const;
+    uint8 GetCurrentTierNum(const Player* player, const Item* item) const;
+    const ItemTier* GetCurrentTier(const Player* player, const Item* item) const;
+    const ItemTier* GetNextTier(const Player* player, const Item* item) const;
+    bool CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const;
+    bool IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier, bool checkWeaponDmg, bool checkWeaponSpd) const;
+    bool CanBreakthrough(const Player* player, const Item* item) const;
+    bool PerformBreakthrough(Player* player, Item* item);
+    bool PurchaseStatUpgrade(Player* player, Item* item, uint32 statType);
+    bool PurchaseWeaponDmgUpgrade(Player* player, Item* item);
+    bool PurchaseWeaponSpdUpgrade(Player* player, Item* item);
+    const WeaponUpgradeRank* FindWeaponDmgRank(uint16 statRank) const;
+    const WeaponUpgradeRank* FindWeaponSpdRank(uint16 statRank) const;
+    StatRequirementContainer BuildWeaponRankReqs(const WeaponUpgradeRank* rank) const;
+
     void BuildUpgradableItemCatalogue(const Player* player, PagedDataType type);
     void BuildUpgradableWeaponSpeedItemCatalogue(const Player* player);
     void BuildStatsUpgradeCatalogue(const Player* player, const Item* item);
@@ -242,6 +289,8 @@ public:
     bool IsValidItemForUpgrade(const Item* item, const Player* player) const;
     bool IsValidWeaponForUpgrade(const Item* item, const Player* player) const;
     bool IsValidWeaponForSpeedUpgrade(const Item* item, const Player* player) const;
+    bool IsItemEntryUpgradeable(uint32 itemEntry) const;
+    bool IsAllowedStatType(uint32 statType) const;
 
     int32 HandleStatModifier(const Player* player, uint8 slot, uint32 statType, int32 amount) const;
     int32 HandleStatModifier(const Player* player, Item* item, uint32 statType, int32 amount, EnchantmentSlot slot) const;
@@ -285,6 +334,9 @@ public:
     const UpgradeStat* FindUpgradeForWeapon(const CharacterUpgradeContainer& characterUpgradeContainer, const Player* player, const Item* item) const;
     const UpgradeStat* FindUpgradeForWeaponDamage(const Player* player, const Item* item) const;
     const UpgradeStat* FindUpgradeForWeaponSpeed(const Player* player, const Item* item) const;
+    const UpgradeStat* FindUpgradeStat(uint32 statType, uint16 rank) const;
+    const UpgradeStat* FindUpgradeForItem(const Player* player, const Item* item, uint32 statType) const;
+    const StatRequirementContainer* GetStatRequirements(const UpgradeStat* upgrade, const Item* item) const;
 
     bool IsInactiveStatUpgrade(const Item* item, const UpgradeStat* upgradeStat) const;
     bool IsInactiveWeaponUpgrade() const;
@@ -326,6 +378,11 @@ private:
     CharacterUpgradeContainer characterWeaponSpeedUpgradeData;
     StatRequirementContainer weaponSpeedUpgradeReqs;
 
+    // Tier system
+    ItemTierContainer _tiers;
+    WeaponUpgradeRankContainer _weaponDmgRanks;
+    WeaponUpgradeRankContainer _weaponSpdRanks;
+
     static bool CompareIdentifier(const Identifier* a, const Identifier* b);
     static std::string CopperToMoneyStr(uint32 money, bool colored);
     static std::string FormatItemLocation(const Player* player, const Item* item);
@@ -359,12 +416,10 @@ private:
     }
 
     const UpgradeStat* FindUpgradeStat(uint32 statId) const;
-    const UpgradeStat* FindUpgradeStat(uint32 statType, uint16 rank) const;
     const UpgradeStat* FindWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
     const UpgradeStat* FindNearestWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
     const UpgradeStat* FindNextWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
     std::vector<const UpgradeStat*> _FindUpgradesForItem(const CharacterUpgradeContainer& characterUpgradeDataContainer, const Player* player, const Item* item) const;
-    const UpgradeStat* FindUpgradeForItem(const Player* player, const Item* item, uint32 statType) const;
     bool MeetsRequirement(const Player* player, const UpgradeStatReq& req) const;
     bool MeetsRequirement(const Player* player, const UpgradeStat* upgradeStat, const Item* item) const;
     bool MeetsRequirement(const Player* player, const StatRequirementContainer* reqs) const;
@@ -402,14 +457,12 @@ private:
     bool HandlePurchaseRank(Player* player, Item* item, const UpgradeStat* upgrade);
     bool HandlePurchaseWeaponUpgrade(Player* player, Item* item, const UpgradeStat* upgrade, bool speedUpgrade);
     bool CheckDataValidity() const;
-    bool IsValidStatType(uint32 statType) const;
-    const StatRequirementContainer* GetStatRequirements(const UpgradeStat* upgrade, const Item* item) const;
     bool EmptyRequirements(const StatRequirementContainer* reqs) const;
     void EquipItem(Player* player, Item* item);
     bool TryRefundRequirements(Player* player, const StatRequirementContainer& reqs);
     bool RefundEverything(Player* player, Item* item, const std::vector<const ItemUpgrade::UpgradeStat*>& upgrades);
     bool TryAddItem(Player* player, uint32 entry, uint32 count, bool add);
-    bool IsAllowedStatType(uint32 statType) const;
+    bool IsValidStatType(uint32 statType) const;
     void LoadAllowedStats(const std::string& stats);
 
     void LoadWeaponUpgradePercents(UpgradeStatContainer& upgradeStats, CharacterUpgradeContainer& characterUpgradeContainer, const std::string& percents);

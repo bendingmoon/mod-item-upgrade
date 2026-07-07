@@ -41,6 +41,17 @@ public:
         MAX_PAGED_DATA_TYPE
     };
 
+    enum UpgradeResult
+    {
+        UPGRADE_OK = 0,
+        UPGRADE_ERR_ITEM_NOT_FOUND = 1,
+        UPGRADE_ERR_VALIDATION = 2,
+        UPGRADE_ERR_TIER_MAXED = 3,
+        UPGRADE_ERR_REQUIREMENTS = 4,
+        UPGRADE_ERR_INTERNAL = 5,
+        UPGRADE_ERR_PROBABILITY_FAILED = 6
+    };
+
     enum IdentifierType
     {
         BASE_IDENTIFIER,
@@ -178,6 +189,7 @@ public:
         uint32 statType;
         float statModPct;
         uint16 statRank;
+        float successChance = 100.0f;
     };
     typedef std::vector<UpgradeStat> UpgradeStatContainer;
 
@@ -206,6 +218,7 @@ public:
         uint8 reqType;
         float reqVal1;
         float reqVal2;
+        float successChance = 100.0f;
     };
     typedef std::vector<WeaponUpgradeRank> WeaponUpgradeRankContainer;
 
@@ -254,13 +267,14 @@ public:
     uint8 GetCurrentTierNum(const Player* player, const Item* item) const;
     const ItemTier* GetCurrentTier(const Player* player, const Item* item) const;
     const ItemTier* GetNextTier(const Player* player, const Item* item) const;
+    uint8 GetMaxTierNum(uint32 itemEntry) const;
     bool CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const;
     bool IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier, bool checkWeaponDmg, bool checkWeaponSpd) const;
     bool CanBreakthrough(const Player* player, const Item* item) const;
     bool PerformBreakthrough(Player* player, Item* item);
-    bool PurchaseStatUpgrade(Player* player, Item* item, uint32 statType);
-    bool PurchaseWeaponDmgUpgrade(Player* player, Item* item);
-    bool PurchaseWeaponSpdUpgrade(Player* player, Item* item);
+    UpgradeResult PurchaseStatUpgrade(Player* player, Item* item, uint32 statType);
+    UpgradeResult PurchaseWeaponDmgUpgrade(Player* player, Item* item);
+    UpgradeResult PurchaseWeaponSpdUpgrade(Player* player, Item* item);
     const WeaponUpgradeRank* FindWeaponDmgRank(uint16 statRank) const;
     const WeaponUpgradeRank* FindWeaponSpdRank(uint16 statRank) const;
     StatRequirementContainer BuildWeaponRankReqs(const WeaponUpgradeRank* rank) const;

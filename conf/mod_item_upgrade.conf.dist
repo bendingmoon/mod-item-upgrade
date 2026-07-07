@@ -204,15 +204,3 @@ ItemUpgrade.UpgradeWeaponDamage = 1
 #
 
 ItemUpgrade.UpgradeWeaponSpeed = 1
-
-#
-#    ItemUpgrade.MaxTier
-#        Description: Maximum tier level for item upgrades. Each tier has a range of upgrade ranks.
-#                     Players must max all three categories (stat, weapon damage, weapon speed) in a tier
-#                     before they can "breakthrough" to the next tier.
-#                     Tier definitions (rank ranges, breakthrough costs) are configured in the
-#                     mod_item_upgrade_tiers database table.
-#        Default:     3
-#
-
-ItemUpgrade.MaxTier = 3

@@ -371,7 +371,7 @@ void ItemUpgrade::LoadUpgradeStats()
 {
     upgradeStatList.clear();
 
-    QueryResult result = CharacterDatabase.Query("SELECT id, stat_type, stat_mod_pct, stat_rank FROM mod_item_upgrade_stats");
+    QueryResult result = CharacterDatabase.Query("SELECT id, stat_type, stat_mod_pct, stat_rank, success_chance FROM mod_item_upgrade_stats");
     if (!result)
         return;
 
@@ -383,12 +383,14 @@ void ItemUpgrade::LoadUpgradeStats()
         uint32 statType = fields[1].Get<uint32>();
         float statModPct = fields[2].Get<float>();
         uint16 statRank = fields[3].Get<uint16>();
+        float successChance = fields[4].Get<float>();
 
         UpgradeStat upgradeStat;
         upgradeStat.statId = id;
         upgradeStat.statType = statType;
         upgradeStat.statModPct = statModPct;
         upgradeStat.statRank = statRank;
+        upgradeStat.successChance = successChance;
         upgradeStatList.push_back(upgradeStat);
     } while (result->NextRow());
 }
@@ -557,7 +559,7 @@ void ItemUpgrade::LoadWeaponDmgRanks()
     _weaponDmgRanks.clear();
     weaponUpgradeStats.clear();
 
-    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2 "
+    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2, success_chance "
         "FROM mod_item_upgrade_weapon_dmg ORDER BY stat_rank");
     if (!result)
     {
@@ -577,6 +579,7 @@ void ItemUpgrade::LoadWeaponDmgRanks()
         rank.reqType = fields[3].Get<uint8>();
         rank.reqVal1 = fields[4].Get<float>();
         rank.reqVal2 = fields[5].IsNull() ? 0.0f : fields[5].Get<float>();
+        rank.successChance = fields[6].IsNull() ? 100.0f : fields[6].Get<float>();
 
         _weaponDmgRanks.push_back(rank);
 
@@ -586,6 +589,7 @@ void ItemUpgrade::LoadWeaponDmgRanks()
         stat.statType = 0;
         stat.statModPct = rank.statModPct;
         stat.statRank = rank.statRank;
+        stat.successChance = rank.successChance;
         weaponUpgradeStats.push_back(stat);
 
         count++;
@@ -599,7 +603,7 @@ void ItemUpgrade::LoadWeaponSpdRanks()
     _weaponSpdRanks.clear();
     weaponSpeedUpgradeStats.clear();
 
-    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2 "
+    QueryResult result = CharacterDatabase.Query("SELECT id, stat_mod_pct, stat_rank, req_type, req_val1, req_val2, success_chance "
         "FROM mod_item_upgrade_weapon_spd ORDER BY stat_rank");
     if (!result)
     {
@@ -619,6 +623,7 @@ void ItemUpgrade::LoadWeaponSpdRanks()
         rank.reqType = fields[3].Get<uint8>();
         rank.reqVal1 = fields[4].Get<float>();
         rank.reqVal2 = fields[5].IsNull() ? 0.0f : fields[5].Get<float>();
+        rank.successChance = fields[6].IsNull() ? 100.0f : fields[6].Get<float>();
 
         _weaponSpdRanks.push_back(rank);
 
@@ -628,6 +633,7 @@ void ItemUpgrade::LoadWeaponSpdRanks()
         stat.statType = 0;
         stat.statModPct = rank.statModPct;
         stat.statRank = rank.statRank;
+        stat.successChance = rank.successChance;
         weaponSpeedUpgradeStats.push_back(stat);
 
         count++;
@@ -4233,9 +4239,8 @@ const ItemUpgrade::ItemTier* ItemUpgrade::GetNextTier(const Player* player, cons
     uint8 currentTierNum = GetCurrentTierNum(player, item);
     uint8 nextTierNum = currentTierNum + 1;
 
-    int32 maxTier = GetIntConfig(CONFIG_ITEM_UPGRADE_MAX_TIER);
-    if (nextTierNum > maxTier)
-        return nullptr;
+    // Max tier is determined by the tiers table itself.
+    // If no row exists for nextTierNum, the item cannot breakthrough further.
 
     // First try item-specific configuration
     for (const auto& tier : _tiers)
@@ -4257,20 +4262,61 @@ bool ItemUpgrade::CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const
     return tier->InRange(rank);
 }
 
+uint8 ItemUpgrade::GetMaxTierNum(uint32 itemEntry) const
+{
+    // Prefer item-specific max tier
+    uint8 maxTier = 0;
+    bool hasItemSpecific = false;
+    for (const auto& tier : _tiers)
+    {
+        if (tier.itemEntry == itemEntry)
+        {
+            hasItemSpecific = true;
+            if (tier.tier > maxTier)
+                maxTier = tier.tier;
+        }
+    }
+    if (hasItemSpecific)
+        return maxTier;
+
+    // Fallback to global default (item_entry = 0)
+    for (const auto& tier : _tiers)
+    {
+        if (tier.itemEntry == 0 && tier.tier > maxTier)
+            maxTier = tier.tier;
+    }
+    return maxTier;
+}
+
 bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier,
     bool checkWeaponDmg, bool checkWeaponSpd) const
 {
     if (!tier)
         return true;
 
-    // Check stat upgrades: at least one stat type must be at endRank
-    // (all upgrade ranks share the same scale per tier)
+    // Check stat upgrades: at least one purchased stat type must be at endRank.
+    // If the item has no upgradable stats at all, stats category is trivially maxed.
     bool statMaxed = false;
     std::vector<const UpgradeStat*> statUpgrades = const_cast<ItemUpgrade*>(this)->FindUpgradesForItem(player, item);
     if (statUpgrades.empty())
     {
-        // No stat upgrades purchased yet - not maxed if item has upgradable stats
-        statMaxed = false;
+        // No stat upgrades purchased yet.
+        // Check if the item has ANY upgradable stat; if not, stats are maxed by default.
+        bool hasUpgradableStat = false;
+        const ItemTemplate* proto = item->GetTemplate();
+        for (uint8 i = 0; i < proto->StatsCount; ++i)
+        {
+            if (proto->ItemStat[i].ItemStatValue <= 0)
+                continue;
+            if (!IsAllowedStatType(proto->ItemStat[i].ItemStatType))
+                continue;
+            if (FindUpgradeStat(proto->ItemStat[i].ItemStatType, 1))
+            {
+                hasUpgradableStat = true;
+                break;
+            }
+        }
+        statMaxed = !hasUpgradableStat;
     }
     else
     {
@@ -4362,113 +4408,149 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
     return true;
 }
 
-bool ItemUpgrade::PurchaseStatUpgrade(Player* player, Item* item, uint32 statType)
+ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseStatUpgrade(Player* player, Item* item, uint32 statType)
 {
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
     if (!IsAllowedStatType(statType))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
     if (!IsValidItemForUpgrade(item, player))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const ItemTier* tier = GetCurrentTier(player, item);
     if (!tier)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const UpgradeStat* current = FindUpgradeForItem(player, item, statType);
     uint16 curRank = current ? current->statRank : 0;
 
     // Already maxed in this tier?
     if (curRank >= tier->endRank)
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
     if (!CanPurchaseRankInTier(tier, nextRank))
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     const UpgradeStat* nextStat = FindUpgradeStat(statType, nextRank);
     if (!nextStat)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     if (!MeetsRequirement(player, nextStat, item))
-        return false;
+        return UPGRADE_ERR_REQUIREMENTS;
 
+    // Option B: deduct cost first, then roll probability
     TakeRequirements(player, nextStat, item);
-    return HandlePurchaseRank(player, item, nextStat);
+
+    if (nextStat->successChance < 100.0f)
+    {
+        float roll = (float)urand(0, 10000) / 100.0f;
+        if (roll > nextStat->successChance)
+            return UPGRADE_ERR_PROBABILITY_FAILED;
+    }
+
+    if (!HandlePurchaseRank(player, item, nextStat))
+        return UPGRADE_ERR_INTERNAL;
+
+    return UPGRADE_OK;
 }
 
-bool ItemUpgrade::PurchaseWeaponDmgUpgrade(Player* player, Item* item)
+ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseWeaponDmgUpgrade(Player* player, Item* item)
 {
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
     if (!IsValidWeaponForUpgrade(item, player))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const ItemTier* tier = GetCurrentTier(player, item);
     if (!tier)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const UpgradeStat* current = FindUpgradeForWeaponDamage(player, item);
     uint16 curRank = current ? current->statRank : 0;
     if (curRank >= tier->endRank)
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
     if (!CanPurchaseRankInTier(tier, nextRank))
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     const WeaponUpgradeRank* nextWpn = FindWeaponDmgRank(nextRank);
     if (!nextWpn)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const UpgradeStat* nextStat = _FindUpgradeStat(weaponUpgradeStats,
         [&](const UpgradeStat& s) { return s.statRank == nextRank; });
     if (!nextStat)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     StatRequirementContainer reqs = BuildWeaponRankReqs(nextWpn);
     if (!MeetsRequirement(player, &reqs))
-        return false;
+        return UPGRADE_ERR_REQUIREMENTS;
 
+    // Option B: deduct cost first, then roll probability
     TakeRequirements(player, &reqs);
-    return HandlePurchaseWeaponUpgrade(player, item, nextStat, false);
+
+    if (nextWpn->successChance < 100.0f)
+    {
+        float roll = (float)urand(0, 10000) / 100.0f;
+        if (roll > nextWpn->successChance)
+            return UPGRADE_ERR_PROBABILITY_FAILED;
+    }
+
+    if (!HandlePurchaseWeaponUpgrade(player, item, nextStat, false))
+        return UPGRADE_ERR_INTERNAL;
+
+    return UPGRADE_OK;
 }
 
-bool ItemUpgrade::PurchaseWeaponSpdUpgrade(Player* player, Item* item)
+ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseWeaponSpdUpgrade(Player* player, Item* item)
 {
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
     if (!IsValidWeaponForSpeedUpgrade(item, player))
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const ItemTier* tier = GetCurrentTier(player, item);
     if (!tier)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const UpgradeStat* current = FindUpgradeForWeaponSpeed(player, item);
     uint16 curRank = current ? current->statRank : 0;
     if (curRank >= tier->endRank)
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
     if (!CanPurchaseRankInTier(tier, nextRank))
-        return false;
+        return UPGRADE_ERR_TIER_MAXED;
 
     const WeaponUpgradeRank* nextWpn = FindWeaponSpdRank(nextRank);
     if (!nextWpn)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     const UpgradeStat* nextStat = _FindUpgradeStat(weaponSpeedUpgradeStats,
         [&](const UpgradeStat& s) { return s.statRank == nextRank; });
     if (!nextStat)
-        return false;
+        return UPGRADE_ERR_VALIDATION;
 
     StatRequirementContainer reqs = BuildWeaponRankReqs(nextWpn);
     if (!MeetsRequirement(player, &reqs))
-        return false;
+        return UPGRADE_ERR_REQUIREMENTS;
 
+    // Option B: deduct cost first, then roll probability
     TakeRequirements(player, &reqs);
-    return HandlePurchaseWeaponUpgrade(player, item, nextStat, true);
+
+    if (nextWpn->successChance < 100.0f)
+    {
+        float roll = (float)urand(0, 10000) / 100.0f;
+        if (roll > nextWpn->successChance)
+            return UPGRADE_ERR_PROBABILITY_FAILED;
+    }
+
+    if (!HandlePurchaseWeaponUpgrade(player, item, nextStat, true))
+        return UPGRADE_ERR_INTERNAL;
+
+    return UPGRADE_OK;
 }
 
 ItemUpgrade::ItemVisualsPriority ItemUpgrade::GetItemVisualsPriority() const

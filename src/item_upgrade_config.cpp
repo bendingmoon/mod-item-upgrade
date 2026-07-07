@@ -53,9 +53,6 @@ void ItemUpgradeConfig::Initialize()
     intConfigs[CONFIG_ITEM_UPGRADE_RANDOM_UPGRADES_MAX_RANK] = sConfigMgr->GetOption<int32>("ItemUpgrade.RandomUpgradeMaxRank", 3);
     if (intConfigs[CONFIG_ITEM_UPGRADE_RANDOM_UPGRADES_MAX_RANK] <= 0)
         intConfigs[CONFIG_ITEM_UPGRADE_RANDOM_UPGRADES_MAX_RANK] = 3;
-    intConfigs[CONFIG_ITEM_UPGRADE_MAX_TIER] = sConfigMgr->GetOption<int32>("ItemUpgrade.MaxTier", 3);
-    if (intConfigs[CONFIG_ITEM_UPGRADE_MAX_TIER] < 1)
-        intConfigs[CONFIG_ITEM_UPGRADE_MAX_TIER] = 1;
 }
 
 bool ItemUpgradeConfig::GetBoolConfig(ItemUpgradeBoolConfigs index) const

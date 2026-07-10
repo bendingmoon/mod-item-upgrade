@@ -201,9 +201,7 @@ public:
         std::string name;
         uint16 beginRank;
         uint16 endRank;
-        uint8 breakthroughCostType;  // 1=gold, 2=honor, 3=arena, 4=item
-        float breakthroughCostVal1;
-        float breakthroughCostVal2;
+        StatRequirementContainer costs;  // breakthrough costs, parsed from breakthrough_costs
 
         bool InRange(uint16 rank) const { return rank >= beginRank && rank <= endRank; }
         bool IsMaxRank(uint16 rank) const { return rank >= endRank; }

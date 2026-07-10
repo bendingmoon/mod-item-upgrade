@@ -524,7 +524,7 @@ void ItemUpgrade::LoadTiers()
     _tiers.clear();
 
     QueryResult result = CharacterDatabase.Query("SELECT id, item_entry, tier, name, begin_rank, end_rank, "
-        "breakthrough_cost_type, breakthrough_cost_val1, breakthrough_cost_val2 FROM mod_item_upgrade_tiers ORDER BY item_entry, tier");
+        "breakthrough_costs FROM mod_item_upgrade_tiers ORDER BY item_entry, tier");
     if (!result)
     {
         LOG_INFO("server.loading", ">> Loaded 0 item upgrade tiers.");
@@ -543,9 +543,26 @@ void ItemUpgrade::LoadTiers()
         tier.name = fields[3].Get<std::string>();
         tier.beginRank = fields[4].Get<uint16>();
         tier.endRank = fields[5].Get<uint16>();
-        tier.breakthroughCostType = fields[6].Get<uint8>();
-        tier.breakthroughCostVal1 = fields[7].Get<float>();
-        tier.breakthroughCostVal2 = fields[8].IsNull() ? 0.0f : fields[8].Get<float>();
+
+        // Parse breakthrough_costs: "type:val1:val2|type:val1:val2|..."
+        std::string costsStr = fields[6].Get<std::string>();
+        if (!costsStr.empty())
+        {
+            std::vector<std::string_view> entries = Acore::Tokenize(costsStr, '|', false);
+            for (const std::string_view& entry : entries)
+            {
+                std::vector<std::string_view> parts = Acore::Tokenize(entry, ':', false);
+                if (parts.size() >= 3)
+                {
+                    UpgradeStatReq req;
+                    req.statId = 0;
+                    req.reqType = static_cast<UpgradeStatReqType>(*Acore::StringTo<uint32>(parts[0]));
+                    req.reqVal1 = *Acore::StringTo<float>(parts[1]);
+                    req.reqVal2 = *Acore::StringTo<float>(parts[2]);
+                    tier.costs.push_back(req);
+                }
+            }
+        }
 
         _tiers.push_back(tier);
         count++;
@@ -1778,6 +1795,8 @@ bool ItemUpgrade::HandlePurchaseRank(Player* player, Item* item, const UpgradeSt
     newUpgrade.upgradeStat = upgrade;
     upgrades.push_back(newUpgrade);
 
+    item->SetBinding(true);
+
     return true;
 }
 
@@ -1797,6 +1816,8 @@ bool ItemUpgrade::HandlePurchaseWeaponUpgrade(Player* player, Item* item, const 
     newUpgrade.upgradeStat = upgrade;
     newUpgrade.upgradeStatModPct = upgrade->statModPct;
     upgrades.push_back(newUpgrade);
+
+    item->SetBinding(true);
 
     return true;
 }
@@ -4366,15 +4387,11 @@ bool ItemUpgrade::CanBreakthrough(const Player* player, const Item* item) const
     if (!const_cast<ItemUpgrade*>(this)->IsCategoryMaxedInTier(player, item, currentTier, true, true))
         return false;
 
-    // Check breakthrough cost
-    StatRequirementContainer reqs;
-    UpgradeStatReq req;
-    req.reqType = static_cast<UpgradeStatReqType>(nextTier->breakthroughCostType);
-    req.reqVal1 = nextTier->breakthroughCostVal1;
-    req.reqVal2 = nextTier->breakthroughCostVal2;
-    reqs.push_back(req);
+    // Check all breakthrough costs
+    if (!nextTier->costs.empty() && !const_cast<ItemUpgrade*>(this)->MeetsRequirement(player, &nextTier->costs))
+        return false;
 
-    return const_cast<ItemUpgrade*>(this)->MeetsRequirement(player, &reqs);
+    return true;
 }
 
 bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
@@ -4389,14 +4406,9 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
     if (!nextTier)
         return false;
 
-    // Take breakthrough cost
-    StatRequirementContainer reqs;
-    UpgradeStatReq req;
-    req.reqType = static_cast<UpgradeStatReqType>(nextTier->breakthroughCostType);
-    req.reqVal1 = nextTier->breakthroughCostVal1;
-    req.reqVal2 = nextTier->breakthroughCostVal2;
-    reqs.push_back(req);
-    TakeRequirements(player, &reqs);
+    // Take all breakthrough costs
+    if (!nextTier->costs.empty())
+        TakeRequirements(player, &nextTier->costs);
 
     // Update tier in database
     CharacterDatabase.Execute("REPLACE INTO character_item_tier (guid, item_guid, tier) VALUES ({}, {}, {})",

@@ -35,8 +35,6 @@ public:
     void OnBeforeWorldInitialized() override
     {
         sItemUpgrade->LoadFromDB();
-        sItemUpgrade->BuildWeaponUpgradeReqs();
-        sItemUpgrade->BuildWeaponSpeedUpgradeReqs();
     }
 };
 

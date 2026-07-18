@@ -322,9 +322,6 @@ public:
 
     bool ChooseRandomUpgrade(Player* player, Item* item);
 
-    void BuildWeaponUpgradeReqs();
-    void BuildWeaponSpeedUpgradeReqs();
-
     static std::string StatTypeToString(uint32 statType);
     static std::string EquipmentSlotToString(EquipmentSlots slot);
     static std::vector<_ItemStat> LoadItemStatInfo(const Item* item);
@@ -384,16 +381,15 @@ private:
 
     UpgradeStatContainer weaponUpgradeStats;
     CharacterUpgradeContainer characterWeaponUpgradeData;
-    StatRequirementContainer weaponUpgradeReqs;
 
     UpgradeStatContainer weaponSpeedUpgradeStats;
     CharacterUpgradeContainer characterWeaponSpeedUpgradeData;
-    StatRequirementContainer weaponSpeedUpgradeReqs;
 
     // Tier system
     ItemTierContainer _tiers;
     WeaponUpgradeRankContainer _weaponDmgRanks;
     WeaponUpgradeRankContainer _weaponSpdRanks;
+    std::unordered_map<uint32, std::unordered_map<uint32, uint8>> _characterItemTiers; // player guid counter -> item guid counter -> current tier
 
     static bool CompareIdentifier(const Identifier* a, const Identifier* b);
     static std::string CopperToMoneyStr(uint32 money, bool colored);
@@ -406,6 +402,7 @@ private:
     void LoadCharacterUpgradeData();
     void LoadCharacterWeaponUpgradeData();
     void LoadCharacterWeaponSpeedUpgradeData();
+    void LoadCharacterItemTierData();
     void LoadAllowedItems();
     void LoadAllowedStatsItems();
     void LoadBlacklistedItems();
@@ -429,12 +426,13 @@ private:
 
     const UpgradeStat* FindUpgradeStat(uint32 statId) const;
     const UpgradeStat* FindWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
-    const UpgradeStat* FindNearestWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
     const UpgradeStat* FindNextWeaponUpgradeStat(const UpgradeStatContainer& upgradeStatContainer, float pct) const;
     std::vector<const UpgradeStat*> _FindUpgradesForItem(const CharacterUpgradeContainer& characterUpgradeDataContainer, const Player* player, const Item* item) const;
+public:
     bool MeetsRequirement(const Player* player, const UpgradeStatReq& req) const;
     bool MeetsRequirement(const Player* player, const UpgradeStat* upgradeStat, const Item* item) const;
     bool MeetsRequirement(const Player* player, const StatRequirementContainer* reqs) const;
+private:
     void TakeRequirements(Player* player, const UpgradeStat* upgradeStat, const Item* item);
     void TakeRequirements(Player* player, const StatRequirementContainer* reqs);
     void TakeWeaponUpgradeRequirements(Player* player);
@@ -477,13 +475,13 @@ private:
     bool IsValidStatType(uint32 statType) const;
     void LoadAllowedStats(const std::string& stats);
 
-    void LoadWeaponUpgradePercents(UpgradeStatContainer& upgradeStats, CharacterUpgradeContainer& characterUpgradeContainer, const std::string& percents);
     bool MeetsWeaponUpgradeRequirement(const Player* player) const;
     bool MeetsWeaponSpeedUpgradeRequirement(const Player* player) const;
 
     bool PurgeUpgrade(Player* player, Item* item);
     bool PurgeWeaponUpgrade(Player* player, Item* item);
     bool PurgeWeaponSpeedUpgrade(Player* player, Item* item);
+    void ResetItemTierIfFullyPurged(Player* player, Item* item);
 
     ItemVisualsPriority GetItemVisualsPriority() const;
 

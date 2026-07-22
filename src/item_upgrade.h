@@ -202,6 +202,7 @@ public:
         uint16 beginRank;
         uint16 endRank;
         StatRequirementContainer costs;  // breakthrough costs, parsed from breakthrough_costs
+        uint32 breakthroughEnchantId = 0;  // SpellItemEnchantment id granted on breakthrough to this tier, 0 = none
 
         bool InRange(uint16 rank) const { return rank >= beginRank && rank <= endRank; }
         bool IsMaxRank(uint16 rank) const { return rank >= endRank; }

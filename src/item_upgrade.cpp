@@ -551,7 +551,7 @@ void ItemUpgrade::LoadTiers()
     _tiers.clear();
 
     QueryResult result = CharacterDatabase.Query("SELECT id, item_entry, tier, name, begin_rank, end_rank, "
-        "breakthrough_costs FROM mod_item_upgrade_tiers ORDER BY item_entry, tier");
+        "breakthrough_costs, breakthrough_enchant_id FROM mod_item_upgrade_tiers ORDER BY item_entry, tier");
     if (!result)
     {
         LOG_INFO("server.loading", ">> Loaded 0 item upgrade tiers.");
@@ -570,6 +570,14 @@ void ItemUpgrade::LoadTiers()
         tier.name = fields[3].Get<std::string>();
         tier.beginRank = fields[4].Get<uint16>();
         tier.endRank = fields[5].Get<uint16>();
+        tier.breakthroughEnchantId = fields[7].Get<uint32>();
+
+        if (tier.breakthroughEnchantId && !sSpellItemEnchantmentStore.LookupEntry(tier.breakthroughEnchantId))
+        {
+            LOG_ERROR("sql.sql", "Table `mod_item_upgrade_tiers` has invalid `breakthrough_enchant_id` {} for `id` {}, reset to 0",
+                tier.breakthroughEnchantId, tier.id);
+            tier.breakthroughEnchantId = 0;
+        }
 
         // Parse breakthrough_costs: "type:val1:val2|type:val1:val2|..."
         std::string costsStr = fields[6].Get<std::string>();
@@ -4483,6 +4491,22 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
         player->GetGUID().GetCounter(), item->GetGUID().GetCounter(), nextTier->tier);
 
     _characterItemTiers[player->GetGUID().GetCounter()][item->GetGUID().GetCounter()] = nextTier->tier;
+
+    // Grant the breakthrough enchant (词条) configured for the new tier.
+    // Uses PROP_ENCHANTMENT_SLOT_1 (unused by enchants, gems, socket bonus and
+    // the StatBooster reforge feature); re-breaking through overwrites it.
+    if (nextTier->breakthroughEnchantId)
+    {
+        if (item->IsEquipped())
+            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, false);
+
+        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_1, nextTier->breakthroughEnchantId, 0, 0);
+
+        if (item->IsEquipped())
+            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, true);
+
+        item->SetState(ITEM_CHANGED, player);
+    }
 
     VisualFeedback(player);
     SendMessage(player, "Item has broken through to " + nextTier->name + "!");

@@ -7,6 +7,7 @@ CREATE TABLE `mod_item_upgrade_tiers`(
     `begin_rank` smallint unsigned NOT NULL COMMENT '该Tier的起始rank (属性/武器伤害/武器攻速共用)',
     `end_rank` smallint unsigned NOT NULL COMMENT '该Tier的结束rank',
     `breakthrough_costs` text DEFAULT NULL COMMENT '突破消耗, 格式: type:val1:val2|type:val1:val2, 例: 1:50000000:0|4:12345:3|4:67890:5',
+    `breakthrough_enchant_id` int unsigned NOT NULL DEFAULT 0 COMMENT '突破到该Tier后奖励的词条附魔ID (SpellItemEnchantment), 0=无',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_item_tier` (`item_entry`, `tier`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

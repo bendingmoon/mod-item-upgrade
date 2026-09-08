@@ -49,7 +49,8 @@ public:
         UPGRADE_ERR_TIER_MAXED = 3,
         UPGRADE_ERR_REQUIREMENTS = 4,
         UPGRADE_ERR_INTERNAL = 5,
-        UPGRADE_ERR_PROBABILITY_FAILED = 6
+        UPGRADE_ERR_PROBABILITY_FAILED = 6,
+        UPGRADE_ERR_REFUND_BLOCKED = 7
     };
 
     enum IdentifierType
@@ -267,15 +268,22 @@ public:
     const ItemTier* GetCurrentTier(const Player* player, const Item* item) const;
     const ItemTier* GetNextTier(const Player* player, const Item* item) const;
     uint8 GetMaxTierNum(uint32 itemEntry) const;
+    // 面板显示用相对 rank 基准 = 该装备 tier1 行 beginRank - 1（专属回退全局，无配置为 0）
+    uint16 GetRankDisplayBase(uint32 itemEntry) const;
+    // 取该装备的全部 tier 配置行（tier1..maxTier，专属回退全局，缺行填 nullptr），供品阶预览下发
+    void GetItemTierList(uint32 itemEntry, std::vector<const ItemTier*>& outTiers) const;
     bool CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const;
     bool IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier, bool checkWeaponDmg, bool checkWeaponSpd) const;
     bool CanBreakthrough(const Player* player, const Item* item) const;
     bool PerformBreakthrough(Player* player, Item* item);
+    // 移动端一键重置：退还全部已成功消耗（含突破消耗，失败消耗不含），装备升级/突破/词条全部清零
+    UpgradeResult PurgeAllUpgradesWithRefund(Player* player, Item* item, StatRequirementContainer& outRefunded);
     UpgradeResult PurchaseStatUpgrade(Player* player, Item* item, uint32 statType);
     UpgradeResult PurchaseWeaponDmgUpgrade(Player* player, Item* item);
     UpgradeResult PurchaseWeaponSpdUpgrade(Player* player, Item* item);
     const WeaponUpgradeRank* FindWeaponDmgRank(uint16 statRank) const;
     const WeaponUpgradeRank* FindWeaponSpdRank(uint16 statRank) const;
+    uint16 GetWeaponSpdLadderMaxRank() const;
     StatRequirementContainer BuildWeaponRankReqs(const WeaponUpgradeRank* rank) const;
 
     void BuildUpgradableItemCatalogue(const Player* player, PagedDataType type);
@@ -326,6 +334,7 @@ public:
     static std::string StatTypeToString(uint32 statType);
     static std::string EquipmentSlotToString(EquipmentSlots slot);
     static std::vector<_ItemStat> LoadItemStatInfo(const Item* item);
+    static std::vector<_ItemStat> LoadItemTemplateStatInfo(const Item* item);
     static const _ItemStat* GetStatByType(const std::vector<_ItemStat>& statInfo, uint32 statType);
     static std::pair<float, float> GetItemProtoDamage(const ItemTemplate* proto);
     static std::pair<float, float> GetItemProtoDamage(const Item* item);
@@ -391,6 +400,9 @@ private:
     WeaponUpgradeRankContainer _weaponDmgRanks;
     WeaponUpgradeRankContainer _weaponSpdRanks;
     std::unordered_map<uint32, std::unordered_map<uint32, uint8>> _characterItemTiers; // player guid counter -> item guid counter -> current tier
+
+    // 按 Tier 编号查找配置（特定装备行优先，回退全局 item_entry=0 行）
+    const ItemTier* GetTierByNum(uint32 itemEntry, uint8 tierNum) const;
 
     static bool CompareIdentifier(const Identifier* a, const Identifier* b);
     static std::string CopperToMoneyStr(uint32 money, bool colored);

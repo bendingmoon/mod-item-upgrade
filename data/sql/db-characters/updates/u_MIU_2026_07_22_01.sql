@@ -1,13 +1,4 @@
-DROP TABLE IF EXISTS `mod_item_upgrade_stats_req`;
-CREATE TABLE `mod_item_upgrade_stats_req`(
-	`id` int unsigned not null AUTO_INCREMENT,
-	`stat_id` int unsigned not null,
-    `req_type` tinyint unsigned not null,
-    `req_val1` float not null,
-    `req_val2` float,
-    PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
+DELETE FROM `mod_item_upgrade_stats_req`;
 INSERT INTO `mod_item_upgrade_stats_req` (`id`, `stat_id`, `req_type`, `req_val1`, `req_val2`) VALUES (1, 1, 1, 10000000, NULL);
 INSERT INTO `mod_item_upgrade_stats_req` (`id`, `stat_id`, `req_type`, `req_val1`, `req_val2`) VALUES (2, 2, 1, 10000000, NULL);
 INSERT INTO `mod_item_upgrade_stats_req` (`id`, `stat_id`, `req_type`, `req_val1`, `req_val2`) VALUES (3, 3, 1, 10000000, NULL);

@@ -650,6 +650,15 @@ void ItemUpgrade::LoadWeaponDmgRanks()
         rank.reqVal2 = fields[5].IsNull() ? 0.0f : fields[5].Get<float>();
         rank.successChance = fields[6].IsNull() ? 100.0f : fields[6].Get<float>();
 
+        if (rank.statModPct <= 0.0f)
+        {
+            LOG_ERROR("sql.sql", "Table `mod_item_upgrade_weapon_dmg` has invalid `stat_mod_pct` {} for `id` {}, skip", rank.statModPct, rank.id);
+            continue;
+        }
+
+        if (rank.statModPct > 100.0f)
+            LOG_WARN("sql.sql", "Table `mod_item_upgrade_weapon_dmg` has unusually high `stat_mod_pct` {} for `id` {} (more than double damage)", rank.statModPct, rank.id);
+
         if (!IsValidReqType(rank.reqType))
         {
             LOG_ERROR("sql.sql", "Table `mod_item_upgrade_weapon_dmg` has invalid `req_type` {} for `id` {}, skip", rank.reqType, rank.id);
@@ -968,7 +977,7 @@ bool ItemUpgrade::IsValidItemForUpgrade(const Item* item, const Player* player) 
     if (item->GetOwnerGUID() != player->GetGUID())
         return false;
 
-    if (LoadItemStatInfo(item).empty())
+    if (LoadItemTemplateStatInfo(item).empty())
         return false;
 
     const ItemTemplate* proto = item->GetTemplate();
@@ -1149,7 +1158,7 @@ bool ItemUpgrade::_AddPagedData(Player* player, const PagedData& pagedData, uint
 
         if (pagedData.type == PAGED_DATA_TYPE_STATS)
         {
-            std::vector<_ItemStat> statTypes = LoadItemStatInfo(item);
+            std::vector<_ItemStat> statTypes = LoadItemTemplateStatInfo(item);
             std::ostringstream ossStatTypes;
             ossStatTypes << "HAS STATS: ";
             for (uint32 i = 0; i < statTypes.size(); i++)
@@ -1166,7 +1175,7 @@ bool ItemUpgrade::_AddPagedData(Player* player, const PagedData& pagedData, uint
         else if (pagedData.type == PAGED_DATA_TYPE_REQS)
         {
             const UpgradeStat* upgradeStat = pagedData.upgradeStat;
-            std::vector<_ItemStat> statInfoList = LoadItemStatInfo(item);
+            std::vector<_ItemStat> statInfoList = LoadItemTemplateStatInfo(item);
             const _ItemStat* statInfo = GetStatByType(statInfoList, upgradeStat->statType);
             if (!statInfo)
                 return false;
@@ -2107,7 +2116,9 @@ int32 ItemUpgrade::HandleStatModifier(const Player* player, Item* item, uint32 s
     if (!GetBoolConfig(CONFIG_ITEM_UPGRADE_ENABLED) || !IsAllowedItem(item) || IsBlacklistedItem(item) || !IsAllowedStatType(statType))
         return amount;
 
-    if (slot < MAX_INSPECTED_ENCHANTMENT_SLOT)
+    // Only template stats (sentinel MAX_ENCHANTMENT_SLOT) are amplified.
+    // Enchant-granted stats (random suffix, breakthrough enchant) are not.
+    if (slot != MAX_ENCHANTMENT_SLOT)
         return amount;
 
     const UpgradeStat* foundUpgrade = FindUpgradeForItem(player, item, statType);
@@ -2400,7 +2411,7 @@ void ItemUpgrade::BuildItemUpgradeStatsCatalogue(const Player* player, const Ite
     std::vector<const UpgradeStat*> itemUpgrades = FindUpgradesForItem(player, item);
     if (!itemUpgrades.empty())
     {
-        std::vector<_ItemStat> statInfo = LoadItemStatInfo(item);
+        std::vector<_ItemStat> statInfo = LoadItemTemplateStatInfo(item);
         for (const UpgradeStat* upgradeStat : itemUpgrades)
         {
             const _ItemStat* foundStat = GetStatByType(statInfo, upgradeStat->statType);
@@ -2781,7 +2792,7 @@ void ItemUpgrade::BuildStatsUpgradeCatalogue(const Player* player, const Item* i
 
     if (IsAllowedItem(item) && !IsBlacklistedItem(item))
     {
-        std::vector<_ItemStat> statInfoList = LoadItemStatInfo(item);
+        std::vector<_ItemStat> statInfoList = LoadItemTemplateStatInfo(item);
         std::unordered_map<uint32, bool> processed;
         for (const UpgradeStat& stat : upgradeStatList)
         {
@@ -2898,7 +2909,7 @@ void ItemUpgrade::BuildStatsUpgradeByPctCatalogueBulk(const Player* player, cons
     if (upgradesPctMap.find(pct) != upgradesPctMap.end())
     {
         const std::vector<const UpgradeStat*>& upgrades = upgradesPctMap.at(pct);
-        std::vector<_ItemStat> statInfoList = LoadItemStatInfo(item);
+        std::vector<_ItemStat> statInfoList = LoadItemTemplateStatInfo(item);
         for (const UpgradeStat* stat : upgrades)
         {
             const _ItemStat* foundStat = GetStatByType(statInfoList, stat->statType);
@@ -3039,7 +3050,7 @@ std::unordered_map<uint32, const ItemUpgrade::UpgradeStat*> ItemUpgrade::FindAll
     if (upgradesPctMap.find(pct) != upgradesPctMap.end())
     {
         const std::vector<const UpgradeStat*>& upgrades = upgradesPctMap.at(pct);
-        std::vector<_ItemStat> statInfoList = LoadItemStatInfo(item);
+        std::vector<_ItemStat> statInfoList = LoadItemTemplateStatInfo(item);
         for (const UpgradeStat* stat : upgrades)
         {
             const _ItemStat* foundStat = GetStatByType(statInfoList, stat->statType);
@@ -3071,14 +3082,15 @@ std::unordered_map<uint32, const ItemUpgrade::UpgradeStat*> ItemUpgrade::FindAll
 
 /*static*/ int32 ItemUpgrade::CalculateModPct(int32 value, const UpgradeStat* upgradeStat)
 {
-    int32 newAmount = (int32)(value * (1 + upgradeStat->statModPct / 100.0f));
-    return std::max(newAmount, value + upgradeStat->statRank);
+    // Pure percentage with round-up: any fractional gain still grants at least +1.
+    // (Former value+rank floor removed — gains are now predictable for players.)
+    return (int32)std::ceil(value * (1 + upgradeStat->statModPct / 100.0f));
 }
 
 /*static*/ float ItemUpgrade::CalculateModPctF(float value, const UpgradeStat* upgradeStat)
 {
-    float newAmount = value * (1.0f + upgradeStat->statModPct / 100.0f);
-    return std::max(newAmount, value + upgradeStat->statRank);
+    // See CalculateModPct: pure percentage; callers round min down / max up.
+    return value * (1.0f + upgradeStat->statModPct / 100.0f);
 }
 
 /*static*/ uint32 ItemUpgrade::CalculatePctDecrease(uint32 value, float pct)
@@ -3106,7 +3118,7 @@ std::unordered_map<uint32, const ItemUpgrade::UpgradeStat*> ItemUpgrade::FindAll
     return nullptr;
 }
 
-/*static*/ std::vector<_ItemStat> ItemUpgrade::LoadItemStatInfo(const Item* item)
+/*static*/ std::vector<_ItemStat> ItemUpgrade::LoadItemTemplateStatInfo(const Item* item)
 {
     std::vector<_ItemStat> statInfo;
     ItemTemplate const* proto = item->GetTemplate();
@@ -3116,15 +3128,21 @@ std::unordered_map<uint32, const ItemUpgrade::UpgradeStat*> ItemUpgrade::FindAll
         if (i >= proto->StatsCount)
             continue;
 
-        uint32 statType = proto->ItemStat[i].ItemStatType;
         if (proto->ItemStat[i].ItemStatValue > 0)
         {
             _ItemStat stat;
-            stat.ItemStatType = statType;
+            stat.ItemStatType = proto->ItemStat[i].ItemStatType;
             stat.ItemStatValue = proto->ItemStat[i].ItemStatValue;
             statInfo.push_back(stat);
         }
     }
+
+    return statInfo;
+}
+
+/*static*/ std::vector<_ItemStat> ItemUpgrade::LoadItemStatInfo(const Item* item)
+{
+    std::vector<_ItemStat> statInfo = LoadItemTemplateStatInfo(item);
 
     for (uint32 slot = PROP_ENCHANTMENT_SLOT_0; slot < MAX_ENCHANTMENT_SLOT; ++slot)
     {
@@ -3729,14 +3747,18 @@ std::pair<uint32, uint32> ItemUpgrade::CalculateItemLevel(const Player* player, 
         return std::make_pair(proto->ItemLevel, proto->ItemLevel);
 
     uint32 originalSum = std::accumulate(originalStats.begin(), originalStats.end(), 0, [&](uint32 a, const _ItemStat& stat) { return a + stat.ItemStatValue; });
-    uint32 upgradedSum = 0;
 
-    for (const _ItemStat& stat : originalStats)
+    // Enchant-granted stats count raw; only template stats are amplified
+    // (same rule as HandleStatModifier's slot gate).
+    uint32 upgradedSum = originalSum;
+    for (const _ItemStat& stat : LoadItemTemplateStatInfo(item))
     {
+        int32 amplified;
         if (upgrades.find(stat.ItemStatType) != upgrades.end())
-            upgradedSum += (uint32)CalculateModPct(stat.ItemStatValue, upgrades.at(stat.ItemStatType));
+            amplified = CalculateModPct(stat.ItemStatValue, upgrades.at(stat.ItemStatType));
         else
-            upgradedSum += HandleStatModifier(player, item, stat.ItemStatType, stat.ItemStatValue, MAX_ENCHANTMENT_SLOT);
+            amplified = HandleStatModifier(player, item, stat.ItemStatType, stat.ItemStatValue, MAX_ENCHANTMENT_SLOT);
+        upgradedSum += amplified - stat.ItemStatValue;
     }
 
     if (upgradedSum <= originalSum)
@@ -3827,8 +3849,10 @@ bool ItemUpgrade::PurgeWeaponUpgrade(Player* player, Item* item)
     const UpgradeStat* weaponUpgrade = FindUpgradeForWeapon(characterWeaponUpgradeData, player, item);
     if (weaponUpgrade != nullptr)
     {
+        // 阶梯分段后只退段内已购档（段首 = tier1 beginRank），不退段前空档
+        uint16 segFirstRank = GetRankDisplayBase(item->GetEntry()) + 1;
         StatRequirementContainer allReqs;
-        for (uint16 rank = 1; rank <= weaponUpgrade->statRank; ++rank)
+        for (uint16 rank = segFirstRank; rank <= weaponUpgrade->statRank; ++rank)
         {
             StatRequirementContainer rankReqs = BuildWeaponRankReqs(FindWeaponDmgRank(rank));
             for (const UpgradeStatReq& req : rankReqs)
@@ -3942,10 +3966,12 @@ bool ItemUpgrade::RefundEverything(Player* player, Item* item, const std::vector
 
     uint32 index = 0;
     std::unordered_map<uint32, const UpgradeStat*> bulkUpgrades;
+    // 阶梯分段后只退段内已购档（段首 = tier1 beginRank）
+    uint16 segFirstRank = GetRankDisplayBase(item->GetEntry()) + 1;
     for (const UpgradeStat* stat : upgrades)
     {
         uint16 rank = stat->statRank;
-        while (rank >= 1)
+        while (rank >= segFirstRank)
         {
             bulkUpgrades[index++] = FindUpgradeStat(stat->statType, rank);
             rank--;
@@ -3974,7 +4000,7 @@ bool ItemUpgrade::ChooseRandomUpgrade(Player* player, Item* item)
         return false;
 
     uint32 statCountToUpgrade = urand(1, (uint32)GetIntConfig(CONFIG_ITEM_UPGRADE_RANDOM_UPGRADES_MAX_STATS));
-    std::vector<_ItemStat> statTypes = LoadItemStatInfo(item);
+    std::vector<_ItemStat> statTypes = LoadItemTemplateStatInfo(item);
     std::vector<const UpgradeStat*> upgrades;
     for (const _ItemStat& stat : statTypes)
     {
@@ -4096,6 +4122,15 @@ bool ItemUpgrade::CheckDataValidity() const
         if (upgrade.statModPct <= 0)
         {
             LOG_ERROR("sql.sql", "FATAL: Table `mod_item_upgrade_stats` has invalid `stat_mod_pct` {}", upgrade.statModPct);
+            ok = false;
+        }
+
+        auto reqItr = baseStatRequirements.find(upgrade.statId);
+        if (reqItr == baseStatRequirements.end() || reqItr->second.empty())
+        {
+            LOG_ERROR("sql.sql", "FATAL: Table `mod_item_upgrade_stats` `id` {} (stat_type {} rank {}) has no "
+                "requirements in `mod_item_upgrade_stats_req`, purchases for it would be free",
+                upgrade.statId, upgrade.statType, upgrade.statRank);
             ok = false;
         }
     }
@@ -4257,6 +4292,11 @@ const ItemUpgrade::WeaponUpgradeRank* ItemUpgrade::FindWeaponSpdRank(uint16 stat
     return nullptr;
 }
 
+uint16 ItemUpgrade::GetWeaponSpdLadderMaxRank() const
+{
+    return _weaponSpdRanks.empty() ? 0 : _weaponSpdRanks.back().statRank;
+}
+
 // ================================================================
 // Tier System
 // ================================================================
@@ -4374,17 +4414,14 @@ bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, 
     // Check stat upgrades: ALL upgradable stat types on the item must be at endRank.
     // If the item has no upgradable stats at all, stats category is trivially maxed.
     bool statMaxed = true;
-    const ItemTemplate* proto = item->GetTemplate();
     bool hasUpgradableStat = false;
     std::vector<const UpgradeStat*> statUpgrades = const_cast<ItemUpgrade*>(this)->FindUpgradesForItem(player, item);
 
-    for (uint8 i = 0; i < proto->StatsCount; ++i)
+    for (const _ItemStat& stat : LoadItemTemplateStatInfo(item))
     {
-        if (proto->ItemStat[i].ItemStatValue <= 0)
+        if (!IsAllowedStatType(stat.ItemStatType))
             continue;
-        if (!IsAllowedStatType(proto->ItemStat[i].ItemStatType))
-            continue;
-        if (!FindUpgradeStat(proto->ItemStat[i].ItemStatType, 1))
+        if (!FindUpgradeStat(stat.ItemStatType, 1))
             continue;
 
         hasUpgradableStat = true;
@@ -4393,7 +4430,7 @@ bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, 
         bool thisStatMaxed = false;
         for (const auto* upgrade : statUpgrades)
         {
-            if (upgrade->statType == proto->ItemStat[i].ItemStatType &&
+            if (upgrade->statType == stat.ItemStatType &&
                 upgrade->statRank >= tier->endRank)
             {
                 thisStatMaxed = true;
@@ -4420,14 +4457,17 @@ bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, 
         weaponDmgMaxed = (dmgUpgrade && dmgUpgrade->statRank >= tier->endRank);
     }
 
-    // Check weapon speed
+    // Check weapon speed (optional line): when the tier's rank range is beyond
+    // the speed ladder, its cap is the ladder max, not the tier's endRank.
     bool hasWeaponSpd = false;
     bool weaponSpdMaxed = true;
     if (checkWeaponSpd && IsValidWeaponForSpeedUpgrade(item, player))
     {
         hasWeaponSpd = true;
+        uint16 spdLadderMax = GetWeaponSpdLadderMaxRank();
+        uint16 spdCap = tier->beginRank > spdLadderMax ? spdLadderMax : tier->endRank;
         const UpgradeStat* spdUpgrade = const_cast<ItemUpgrade*>(this)->FindUpgradeForWeaponSpeed(player, item);
-        weaponSpdMaxed = (spdUpgrade && spdUpgrade->statRank >= tier->endRank);
+        weaponSpdMaxed = (spdUpgrade && spdUpgrade->statRank >= spdCap);
     }
 
     // If no category has any upgradeable data at all, the item is not "maxed"
@@ -4452,8 +4492,10 @@ bool ItemUpgrade::CanBreakthrough(const Player* player, const Item* item) const
     if (!nextTier)
         return false;
 
-    // All categories must be maxed in current tier
-    if (!const_cast<ItemUpgrade*>(this)->IsCategoryMaxedInTier(player, item, currentTier, true, true))
+    // All categories must be maxed in current tier. Weapon speed is excluded:
+    // it is an optional bonus line (Slam scales off actual weapon speed, so
+    // faster is not strictly better for every class) and must not gate breakthrough.
+    if (!const_cast<ItemUpgrade*>(this)->IsCategoryMaxedInTier(player, item, currentTier, true, false))
         return false;
 
     // Note: MeetsRequirement (materials/gold) is NOT checked here.
@@ -4514,6 +4556,162 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
     return true;
 }
 
+const ItemUpgrade::ItemTier* ItemUpgrade::GetTierByNum(uint32 itemEntry, uint8 tierNum) const
+{
+    // First try item-specific configuration
+    for (const auto& tier : _tiers)
+        if (tier.tier == tierNum && tier.itemEntry == itemEntry)
+            return &tier;
+
+    // Fallback to global default
+    for (const auto& tier : _tiers)
+        if (tier.tier == tierNum && tier.itemEntry == 0)
+            return &tier;
+
+    return nullptr;
+}
+
+uint16 ItemUpgrade::GetRankDisplayBase(uint32 itemEntry) const
+{
+    const ItemTier* tier1 = GetTierByNum(itemEntry, 1);
+    return tier1 && tier1->beginRank > 0 ? uint16(tier1->beginRank - 1) : uint16(0);
+}
+
+void ItemUpgrade::GetItemTierList(uint32 itemEntry, std::vector<const ItemTier*>& outTiers) const
+{
+    uint8 maxTier = GetMaxTierNum(itemEntry);
+    for (uint8 t = 1; t <= maxTier; ++t)
+        outTiers.push_back(GetTierByNum(itemEntry, t));
+}
+
+ItemUpgrade::UpgradeResult ItemUpgrade::PurgeAllUpgradesWithRefund(Player* player, Item* item, StatRequirementContainer& outRefunded)
+{
+    if (!item)
+        return UPGRADE_ERR_ITEM_NOT_FOUND;
+
+    std::vector<const UpgradeStat*> statUpgrades = FindUpgradesForItem(player, item);
+    const UpgradeStat* weaponDmgUpgrade = FindUpgradeForWeaponDamage(player, item);
+    const UpgradeStat* weaponSpdUpgrade = FindUpgradeForWeaponSpeed(player, item);
+    uint8 currentTierNum = GetCurrentTierNum(player, item);
+
+    // 没有任何升级进度（未升过级且 Tier 仍是初始 1）时不允许重置
+    if (statUpgrades.empty() && !weaponDmgUpgrade && !weaponSpdUpgrade && currentTierNum <= 1)
+        return UPGRADE_ERR_VALIDATION;
+
+    // 1) 汇总应退消耗：按已达 rank / 已突破 Tier 从当前配置表推导。
+    //    概率失败的消耗没有留下任何进度记录，天然不包含在退款内。
+    StatRequirementContainer allReqs;
+
+    // 阶梯按装备分段（橙装段 rank 10+），属性/伤害线只退段内已购档（段首 = tier1 beginRank）；
+    // 从 1 起退会把段前的通用段/他段空档白退成钱。攻速线阶梯恒 1-9，仍从 1 起退。
+    uint16 segFirstRank = GetRankDisplayBase(item->GetEntry()) + 1;
+
+    // 属性升级：每条属性退段首..currentRank（与 RefundEverything 推导方式一致，含按装备覆写消耗）
+    for (const UpgradeStat* stat : statUpgrades)
+    {
+        for (uint16 rank = segFirstRank; rank <= stat->statRank; ++rank)
+        {
+            const UpgradeStat* rankStat = FindUpgradeStat(stat->statType, rank);
+            if (!rankStat)
+                continue;
+            const StatRequirementContainer* reqs = GetStatRequirements(rankStat, item);
+            if (EmptyRequirements(reqs))
+                continue;
+            for (const UpgradeStatReq& req : *reqs)
+                if (req.reqType != REQ_TYPE_NONE)
+                    allReqs.push_back(req);
+        }
+    }
+
+    // 武器伤害：退段首..currentRank
+    if (weaponDmgUpgrade)
+    {
+        for (uint16 rank = segFirstRank; rank <= weaponDmgUpgrade->statRank; ++rank)
+        {
+            const WeaponUpgradeRank* wRank = FindWeaponDmgRank(rank);
+            if (!wRank)
+                continue;
+            StatRequirementContainer rankReqs = BuildWeaponRankReqs(wRank);
+            for (const UpgradeStatReq& req : rankReqs)
+                if (req.reqType != REQ_TYPE_NONE)
+                    allReqs.push_back(req);
+        }
+    }
+
+    // 武器攻速：退 rank 1..currentRank
+    if (weaponSpdUpgrade)
+    {
+        for (uint16 rank = 1; rank <= weaponSpdUpgrade->statRank; ++rank)
+        {
+            const WeaponUpgradeRank* wRank = FindWeaponSpdRank(rank);
+            if (!wRank)
+                continue;
+            StatRequirementContainer rankReqs = BuildWeaponRankReqs(wRank);
+            for (const UpgradeStatReq& req : rankReqs)
+                if (req.reqType != REQ_TYPE_NONE)
+                    allReqs.push_back(req);
+        }
+    }
+
+    // 突破消耗：退已突破进入的每个 Tier（2..currentTierNum）的 breakthrough_costs
+    for (uint8 t = 2; t <= currentTierNum; ++t)
+    {
+        const ItemTier* tier = GetTierByNum(item->GetEntry(), t);
+        if (!tier)
+            continue;
+        for (const UpgradeStatReq& req : tier->costs)
+            if (req.reqType != REQ_TYPE_NONE)
+                allReqs.push_back(req);
+    }
+
+    // 2) 合并同类项（金币/荣誉/竞技场求和，道具按 entry 合并数量）
+    std::unordered_map<uint32, StatRequirementContainer> mergedMap;
+    mergedMap[0] = allReqs;
+    MergeStatRequirements(mergedMap, false);
+    StatRequirementContainer& merged = mergedMap.at(0);
+
+    // 3) 两阶段退款：先校验金币上限/背包空间，任一不满足则整体失败，升级进度保持不变
+    if (!TryRefundRequirements(player, merged))
+        return UPGRADE_ERR_REFUND_BLOCKED;
+
+    // 4) 清零：三类升级 + Tier + 突破词条
+    if (item->IsEquipped())
+        player->_ApplyItemMods(item, item->GetSlot(), false);
+
+    if (!statUpgrades.empty())
+        RemoveItemUpgrade(player, item);
+    if (weaponDmgUpgrade)
+        RemoveWeaponUpgrade(player, item);
+    if (weaponSpdUpgrade)
+        RemoveWeaponSpeedUpgrade(player, item);
+
+    // 清突破词条（PROP_ENCHANTMENT_SLOT_1）。注意：现有 NPC purge 路径未清词条，此处必须处理
+    if (item->GetEnchantmentId(PROP_ENCHANTMENT_SLOT_1))
+    {
+        if (item->IsEquipped())
+            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, false);
+
+        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_1, 0, 0, 0);
+
+        if (item->IsEquipped())
+            player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, true);
+
+        item->SetState(ITEM_CHANGED, player);
+    }
+
+    // 三类升级都已清空，删除 tier 记录（回到默认 Tier 1）
+    ResetItemTierIfFullyPurged(player, item);
+
+    if (item->IsEquipped())
+        player->_ApplyItemMods(item, item->GetSlot(), true);
+
+    RefreshWeaponSpeed(player);
+    SendItemPacket(player, item);
+
+    outRefunded = merged;
+    return UPGRADE_OK;
+}
+
 ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseStatUpgrade(Player* player, Item* item, uint32 statType)
 {
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
@@ -4524,7 +4722,7 @@ ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseStatUpgrade(Player* player, Item
         return UPGRADE_ERR_VALIDATION;
 
     // The item must actually have the stat being upgraded (same rule as the gossip path)
-    std::vector<_ItemStat> statInfoList = LoadItemStatInfo(item);
+    std::vector<_ItemStat> statInfoList = LoadItemTemplateStatInfo(item);
     if (!GetStatByType(statInfoList, statType))
         return UPGRADE_ERR_VALIDATION;
 
@@ -4657,13 +4855,19 @@ ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseWeaponSpdUpgrade(Player* player,
     if (!tier)
         return UPGRADE_ERR_VALIDATION;
 
+    // Speed line follows tier ranges only when the tier overlaps the speed
+    // ladder; legendary segments starting beyond the ladder use ladder rules.
+    uint16 spdLadderMax = GetWeaponSpdLadderMaxRank();
+    bool beyondLadder = tier->beginRank > spdLadderMax;
+    uint16 cap = beyondLadder ? spdLadderMax : tier->endRank;
+
     const UpgradeStat* current = FindUpgradeForWeaponSpeed(player, item);
     uint16 curRank = current ? current->statRank : 0;
-    if (curRank >= tier->endRank)
+    if (curRank >= cap)
         return UPGRADE_ERR_TIER_MAXED;
 
-    uint16 nextRank = curRank > 0 ? curRank + 1 : tier->beginRank;
-    if (!CanPurchaseRankInTier(tier, nextRank))
+    uint16 nextRank = curRank > 0 ? curRank + 1 : (beyondLadder ? 1 : tier->beginRank);
+    if (nextRank > cap)
         return UPGRADE_ERR_TIER_MAXED;
 
     const WeaponUpgradeRank* nextWpn = FindWeaponSpdRank(nextRank);

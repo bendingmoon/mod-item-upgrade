@@ -8,8 +8,8 @@
 -- 1. 通用段(rank1-9) 伤害/攻速改递减: 成功率 100->20
 --    消耗: 伤害 500x档序(期望~6.1万); 攻速 800x档序(期望~9.8万, 2026-09-08 用户调价)
 -- ----------------------------------------------------------
-UPDATE `mod_item_upgrade_weapon_dmg` SET `req_val1` = 5000000 * `stat_rank`, `success_chance` = 100 - 10 * (`stat_rank` - 1) WHERE `stat_rank` BETWEEN 1 AND 9;
-UPDATE `mod_item_upgrade_weapon_spd` SET `req_val1` = 8000000 * `stat_rank`, `success_chance` = 100 - 10 * (`stat_rank` - 1) WHERE `stat_rank` BETWEEN 1 AND 9;
+UPDATE `mod_item_upgrade_weapon_dmg` SET `req_val1` = 500 * `stat_rank`, `success_chance` = 100 - 10 * (`stat_rank` - 1) WHERE `stat_rank` BETWEEN 1 AND 9;
+UPDATE `mod_item_upgrade_weapon_spd` SET `req_val1` = 800 * `stat_rank`, `success_chance` = 100 - 10 * (`stat_rank` - 1) WHERE `stat_rank` BETWEEN 1 AND 9;
 
 -- ----------------------------------------------------------
 -- 2. 伤害阶梯新段 rank 10-72 (63 行, id 10-72)

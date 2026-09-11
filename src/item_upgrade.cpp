@@ -84,10 +84,12 @@ void ItemUpgrade::LoadFromDB(bool reload)
     LoadBlacklistedItems();
     LoadAllowedStatsItems();
     LoadBlacklistedStatsItems();
+    LoadItemStatOverrides();
     LoadStatRequirements();
     LoadStatRequirementsOverrides();
 
     LoadTiers();
+    LoadBreakthroughEnchantRules();
     LoadWeaponDmgRanks();
     LoadWeaponSpdRanks();
     LoadUpgradeStats();
@@ -203,6 +205,60 @@ void ItemUpgrade::LoadBlacklistedStatsItems()
 
         blacklistedStatItems[stat_id].insert(entry);
     } while (result->NextRow());
+}
+
+void ItemUpgrade::LoadItemStatOverrides()
+{
+    itemStatOverrides.clear();
+
+    QueryResult result = CharacterDatabase.Query("SELECT item_entry, stat_type FROM mod_item_upgrade_item_stats_override");
+    if (!result)
+    {
+        LOG_INFO("server.loading", ">> Loaded 0 item stat overrides.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        uint32 entry = fields[0].Get<uint32>();
+        uint32 statType = fields[1].Get<uint32>();
+
+        if (!sObjectMgr->GetItemTemplate(entry))
+        {
+            LOG_ERROR("sql.sql", "Table `mod_item_upgrade_item_stats_override` has invalid item entry {}, skip", entry);
+            continue;
+        }
+
+        itemStatOverrides[entry].insert(statType);
+        count++;
+    } while (result->NextRow());
+
+    LOG_INFO("server.loading", ">> Loaded {} item stat overrides.", count);
+}
+
+bool ItemUpgrade::IsStatTypeAllowedForItemEntry(uint32 itemEntry, uint32 statType) const
+{
+    if (IsAllowedStatType(statType))
+        return true;
+
+    StatWithItemContainer::const_iterator itr = itemStatOverrides.find(itemEntry);
+    return itr != itemStatOverrides.end() && itr->second.find(statType) != itr->second.end();
+}
+
+bool ItemUpgrade::IsStatTypeAllowedForItem(const Item* item, uint32 statType) const
+{
+    return item && IsStatTypeAllowedForItemEntry(item->GetEntry(), statType);
+}
+
+bool ItemUpgrade::HasStatLadder(uint32 statType) const
+{
+    for (const UpgradeStat& stat : upgradeStatList)
+        if (stat.statType == statType)
+            return true;
+    return false;
 }
 
 void ItemUpgrade::CleanupDB(bool reload)
@@ -620,6 +676,75 @@ void ItemUpgrade::LoadTiers()
     } while (result->NextRow());
 
     LOG_INFO("server.loading", ">> Loaded {} item upgrade tiers.", count);
+}
+
+void ItemUpgrade::LoadBreakthroughEnchantRules()
+{
+    _breakthroughEnchantRules.clear();
+
+    QueryResult result = CharacterDatabase.Query("SELECT id, tier, match_stat, enchant_id, priority "
+        "FROM mod_item_upgrade_breakthrough_enchants");
+    if (!result)
+    {
+        LOG_INFO("server.loading", ">> Loaded 0 breakthrough enchant rules.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        BreakthroughEnchantRule rule;
+        rule.id = fields[0].Get<uint32>();
+        rule.tier = fields[1].Get<uint8>();
+        rule.matchStat = fields[2].Get<uint32>();
+        rule.enchantId = fields[3].Get<uint32>();
+        rule.priority = fields[4].Get<int32>();
+
+        if (!sSpellItemEnchantmentStore.LookupEntry(rule.enchantId))
+        {
+            LOG_ERROR("sql.sql", "Table `mod_item_upgrade_breakthrough_enchants` has invalid `enchant_id` {} for `id` {}, skip",
+                rule.enchantId, rule.id);
+            continue;
+        }
+
+        _breakthroughEnchantRules.push_back(rule);
+        count++;
+    } while (result->NextRow());
+
+    // Highest priority first; ties resolved by lowest id (deterministic order).
+    std::sort(_breakthroughEnchantRules.begin(), _breakthroughEnchantRules.end(),
+        [](const BreakthroughEnchantRule& a, const BreakthroughEnchantRule& b)
+        {
+            if (a.priority != b.priority)
+                return a.priority > b.priority;
+            return a.id < b.id;
+        });
+
+    LOG_INFO("server.loading", ">> Loaded {} breakthrough enchant rules.", count);
+}
+
+uint32 ItemUpgrade::ResolveBreakthroughEnchant(const Item* item, const ItemTier* tier) const
+{
+    if (!tier)
+        return 0;
+
+    // Item-specific tier rows already carry an exact enchant per item;
+    // stat-based rules only apply to global rows.
+    if (tier->itemEntry != 0)
+        return tier->breakthroughEnchantId;
+
+    std::vector<_ItemStat> statInfo = LoadItemTemplateStatInfo(item);
+    for (const auto& rule : _breakthroughEnchantRules)
+    {
+        if (rule.tier != tier->tier)
+            continue;
+        if (GetStatByType(statInfo, rule.matchStat))
+            return rule.enchantId;
+    }
+
+    return tier->breakthroughEnchantId;
 }
 
 void ItemUpgrade::LoadWeaponDmgRanks()
@@ -1067,7 +1192,7 @@ bool ItemUpgrade::IsItemEntryUpgradeable(uint32 itemEntry) const
         if (proto->ItemStat[i].ItemStatValue > 0)
         {
             uint32 statType = proto->ItemStat[i].ItemStatType;
-            if (!IsAllowedStatType(statType))
+            if (!IsStatTypeAllowedForItemEntry(itemEntry, statType))
                 continue;
             for (const UpgradeStat& upgrade : upgradeStatList)
             {
@@ -1163,7 +1288,7 @@ bool ItemUpgrade::_AddPagedData(Player* player, const PagedData& pagedData, uint
             ossStatTypes << "HAS STATS: ";
             for (uint32 i = 0; i < statTypes.size(); i++)
             {
-                if (IsAllowedStatType(statTypes[i].ItemStatType))
+                if (IsStatTypeAllowedForItem(item, statTypes[i].ItemStatType))
                     ossStatTypes << StatTypeToString(statTypes[i].ItemStatType);
                 else
                     ossStatTypes << "|cffb50505" << StatTypeToString(statTypes[i].ItemStatType) << "|r";
@@ -2113,7 +2238,7 @@ int32 ItemUpgrade::HandleStatModifier(const Player* player, uint8 slot, uint32 s
 
 int32 ItemUpgrade::HandleStatModifier(const Player* player, Item* item, uint32 statType, int32 amount, EnchantmentSlot slot) const
 {
-    if (!GetBoolConfig(CONFIG_ITEM_UPGRADE_ENABLED) || !IsAllowedItem(item) || IsBlacklistedItem(item) || !IsAllowedStatType(statType))
+    if (!GetBoolConfig(CONFIG_ITEM_UPGRADE_ENABLED) || !IsAllowedItem(item) || IsBlacklistedItem(item) || !IsStatTypeAllowedForItem(item, statType))
         return amount;
 
     // Only template stats (sentinel MAX_ENCHANTMENT_SLOT) are amplified.
@@ -2428,7 +2553,7 @@ void ItemUpgrade::BuildItemUpgradeStatsCatalogue(const Player* player, const Ite
 
             if (!IsAllowedItem(item)
                 || IsBlacklistedItem(item)
-                || !IsAllowedStatType(upgradeStat->statType)
+                || !IsStatTypeAllowedForItem(item, upgradeStat->statType)
                 || !CanApplyUpgradeForItem(item, upgradeStat))
                 oss << " [|cffb50505INACTIVE|r]";
 
@@ -2799,7 +2924,7 @@ void ItemUpgrade::BuildStatsUpgradeCatalogue(const Player* player, const Item* i
             if (processed.find(stat.statType) != processed.end())
                 continue;
 
-            if (!IsAllowedStatType(stat.statType))
+            if (!IsStatTypeAllowedForItem(item, stat.statType))
                 continue;
 
             const _ItemStat* statInfo = GetStatByType(statInfoList, stat.statType);
@@ -2918,7 +3043,7 @@ void ItemUpgrade::BuildStatsUpgradeByPctCatalogueBulk(const Player* player, cons
 
             std::ostringstream oss;
             std::string statTypeStr = StatTypeToString(stat->statType);
-            if (!IsAllowedStatType(stat->statType))
+            if (!IsStatTypeAllowedForItem(item, stat->statType))
                 oss << "|cffb50505Won't|r upgrade " << statTypeStr << ": stat not allowed for upgrade";
             else if (!CanApplyUpgradeForItem(item, stat))
                 oss << "|cffb50505Won't|r upgrade " << statTypeStr << ": rank not allowed for this item";
@@ -3057,7 +3182,7 @@ std::unordered_map<uint32, const ItemUpgrade::UpgradeStat*> ItemUpgrade::FindAll
             if (foundStat == nullptr)
                 continue;
 
-            if (!IsAllowedStatType(stat->statType))
+            if (!IsStatTypeAllowedForItem(item, stat->statType))
                 continue;
 
             if (!CanApplyUpgradeForItem(item, stat))
@@ -4004,7 +4129,7 @@ bool ItemUpgrade::ChooseRandomUpgrade(Player* player, Item* item)
     std::vector<const UpgradeStat*> upgrades;
     for (const _ItemStat& stat : statTypes)
     {
-        if (!IsAllowedStatType(stat.ItemStatType))
+        if (!IsStatTypeAllowedForItem(item, stat.ItemStatType))
             continue;
 
         const UpgradeStat* foundUpgradeStat = FindNearestUpgradeStat(stat.ItemStatType, (uint16)urand(1, (uint32)GetIntConfig(CONFIG_ITEM_UPGRADE_RANDOM_UPGRADES_MAX_RANK)), item);
@@ -4148,8 +4273,14 @@ bool ItemUpgrade::CheckDataValidity() const
         std::sort(ranks.begin(), ranks.end());
         if (ranks[0] != 1)
         {
-            ok = false;
-            LOG_ERROR("sql.sql", "FATAL: Table `mod_item_upgrade_stats` has invalid starting rank (`stat_rank`) {} for stat type (`stat_type`) {}", ranks[0], rpair.first);
+            if (IsAllowedStatType(rpair.first))
+            {
+                // Global types serve the generic tiers (begin_rank 1): must start at rank 1
+                ok = false;
+                LOG_ERROR("sql.sql", "FATAL: Table `mod_item_upgrade_stats` has invalid starting rank (`stat_rank`) {} for stat type (`stat_type`) {}", ranks[0], rpair.first);
+            }
+            // else: item-specific segment (e.g. trinket segment starting at rank 73) used via
+            // mod_item_upgrade_item_stats_override + dedicated tier rows; legitimately starts above 1
         }
 
         bool consecutive = true;
@@ -4419,9 +4550,9 @@ bool ItemUpgrade::IsCategoryMaxedInTier(const Player* player, const Item* item, 
 
     for (const _ItemStat& stat : LoadItemTemplateStatInfo(item))
     {
-        if (!IsAllowedStatType(stat.ItemStatType))
+        if (!IsStatTypeAllowedForItem(item, stat.ItemStatType))
             continue;
-        if (!FindUpgradeStat(stat.ItemStatType, 1))
+        if (!HasStatLadder(stat.ItemStatType))
             continue;
 
         hasUpgradableStat = true;
@@ -4534,15 +4665,18 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
 
     _characterItemTiers[player->GetGUID().GetCounter()][item->GetGUID().GetCounter()] = nextTier->tier;
 
-    // Grant the breakthrough enchant (词条) configured for the new tier.
+    // Grant the breakthrough enchant (词条) for the new tier, resolved per item:
+    // global tier rows pick a stat-based rule matching the item's template stats,
+    // item-specific rows use their configured enchant as-is.
     // Uses PROP_ENCHANTMENT_SLOT_1 (unused by enchants, gems, socket bonus and
     // the StatBooster reforge feature); re-breaking through overwrites it.
-    if (nextTier->breakthroughEnchantId)
+    uint32 enchantId = ResolveBreakthroughEnchant(item, nextTier);
+    if (enchantId)
     {
         if (item->IsEquipped())
             player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, false);
 
-        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_1, nextTier->breakthroughEnchantId, 0, 0);
+        item->SetEnchantment(PROP_ENCHANTMENT_SLOT_1, enchantId, 0, 0);
 
         if (item->IsEquipped())
             player->ApplyEnchantment(item, PROP_ENCHANTMENT_SLOT_1, true);
@@ -4716,7 +4850,7 @@ ItemUpgrade::UpgradeResult ItemUpgrade::PurchaseStatUpgrade(Player* player, Item
 {
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
         return UPGRADE_ERR_VALIDATION;
-    if (!IsAllowedStatType(statType))
+    if (!IsStatTypeAllowedForItem(item, statType))
         return UPGRADE_ERR_VALIDATION;
     if (!IsValidItemForUpgrade(item, player))
         return UPGRADE_ERR_VALIDATION;
@@ -4958,7 +5092,7 @@ bool ItemUpgrade::IsInactiveStatUpgrade(const Item* item, const UpgradeStat* upg
 
     if (!IsAllowedItem(item)
         || IsBlacklistedItem(item)
-        || !IsAllowedStatType(upgradeStat->statType)
+        || !IsStatTypeAllowedForItem(item, upgradeStat->statType)
         || !CanApplyUpgradeForItem(item, upgradeStat))
         return true;
 

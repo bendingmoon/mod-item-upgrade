@@ -210,6 +210,16 @@ public:
     };
     typedef std::vector<ItemTier> ItemTierContainer;
 
+    struct BreakthroughEnchantRule
+    {
+        uint32 id;
+        uint8 tier;
+        uint32 matchStat;      // ItemModType; item template must have this stat
+        uint32 enchantId;      // SpellItemEnchantment granted when matched
+        int32 priority;        // highest priority wins among matched rules
+    };
+    typedef std::vector<BreakthroughEnchantRule> BreakthroughEnchantRuleContainer;
+
     struct WeaponUpgradeRank
     {
         uint32 id;
@@ -261,6 +271,7 @@ public:
 
     // Tier system
     void LoadTiers();
+    void LoadBreakthroughEnchantRules();
     void LoadWeaponDmgRanks();
     void LoadWeaponSpdRanks();
     const ItemTier* GetItemTier(uint32 itemEntry) const;
@@ -276,6 +287,9 @@ public:
     bool IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier, bool checkWeaponDmg, bool checkWeaponSpd) const;
     bool CanBreakthrough(const Player* player, const Item* item) const;
     bool PerformBreakthrough(Player* player, Item* item);
+    // 突破词条分流: 专属 tier 行(itemEntry!=0)原样返回行配词条; 全局行按装备模板属性
+    // 匹配 _breakthroughEnchantRules(priority 高者胜), 无命中回落行配 breakthroughEnchantId
+    uint32 ResolveBreakthroughEnchant(const Item* item, const ItemTier* tier) const;
     // 移动端一键重置：退还全部已成功消耗（含突破消耗，失败消耗不含），装备升级/突破/词条全部清零
     UpgradeResult PurgeAllUpgradesWithRefund(Player* player, Item* item, StatRequirementContainer& outRefunded);
     UpgradeResult PurchaseStatUpgrade(Player* player, Item* item, uint32 statType);
@@ -312,6 +326,12 @@ public:
     bool IsValidWeaponForSpeedUpgrade(const Item* item, const Player* player) const;
     bool IsItemEntryUpgradeable(uint32 itemEntry) const;
     bool IsAllowedStatType(uint32 statType) const;
+    // 按装备的属性覆盖: 全局 AllowedStats 之外, 仅对指定装备额外开放的属性类型
+    // (mod_item_upgrade_item_stats_override), 供饰品等专属装备配独立属性线
+    bool IsStatTypeAllowedForItem(const Item* item, uint32 statType) const;
+    bool IsStatTypeAllowedForItemEntry(uint32 itemEntry, uint32 statType) const;
+    // 该属性类型是否存在任意阶梯档(不再以 rank1 存在为准, 专属段可从任意 rank 起)
+    bool HasStatLadder(uint32 statType) const;
 
     int32 HandleStatModifier(const Player* player, uint8 slot, uint32 statType, int32 amount) const;
     int32 HandleStatModifier(const Player* player, Item* item, uint32 statType, int32 amount, EnchantmentSlot slot) const;
@@ -383,6 +403,8 @@ private:
     ItemEntryContainer blacklistedItems;
     StatWithItemContainer allowedStatItems;
     StatWithItemContainer blacklistedStatItems;
+    // item_entry -> 额外允许的属性类型集合(全局 AllowedStats 之外的按装备覆盖)
+    StatWithItemContainer itemStatOverrides;
 
     std::map<float, std::vector<const ItemUpgrade::UpgradeStat*>> upgradesPctMap;
 
@@ -397,6 +419,7 @@ private:
 
     // Tier system
     ItemTierContainer _tiers;
+    BreakthroughEnchantRuleContainer _breakthroughEnchantRules;
     WeaponUpgradeRankContainer _weaponDmgRanks;
     WeaponUpgradeRankContainer _weaponSpdRanks;
     std::unordered_map<uint32, std::unordered_map<uint32, uint8>> _characterItemTiers; // player guid counter -> item guid counter -> current tier
@@ -420,6 +443,7 @@ private:
     void LoadAllowedStatsItems();
     void LoadBlacklistedItems();
     void LoadBlacklistedStatsItems();
+    void LoadItemStatOverrides();
     bool IsValidReqType(uint8 reqType) const;
     bool ValidateReq(uint32 id, UpgradeStatReqType reqType, float val1, float val2, const std::string& table) const;
     void AddItemToPagedData(const Item* item, const Player* player, PagedData& pagedData);

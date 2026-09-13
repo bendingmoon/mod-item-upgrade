@@ -5,6 +5,7 @@
 #include "ScriptMgr.h"
 #include "Chat.h"
 #include "CommandScript.h"
+#include "ObjectAccessor.h"
 #include "item_upgrade.h"
 
 using namespace Acore::ChatCommands;
@@ -23,6 +24,7 @@ public:
         {
             { "reload", HandleReloadModItemUpgrade, SEC_ADMINISTRATOR, Console::Yes },
             { "lock",   HandleLockItemUpgrade,      SEC_ADMINISTRATOR, Console::Yes },
+            { "max",    HandleMaxItemUpgrade,       SEC_ADMINISTRATOR, Console::Yes },
             { "list",   HandleListUpgrades,         SEC_PLAYER,        Console::No  }
         };
 
@@ -49,6 +51,48 @@ private:
         sItemUpgrade->SetReloading(false);
 
         handler->SendGlobalGMSysMessage("Item Upgrade module data successfully reloaded.");
+        return true;
+    }
+
+    // .item_upgrade max <玩家名> <装备槽0-18> — 指定槽位装备免费直升到最顶级（不扣金币/材料，不 roll 成功率）
+    static bool HandleMaxItemUpgrade(ChatHandler* handler, std::string playerName, uint32 slot)
+    {
+        Player* player = ObjectAccessor::FindPlayerByName(playerName, false);
+        if (!player)
+        {
+            handler->PSendSysMessage("玩家 {} 不在线（该命令仅支持在线玩家）。", playerName);
+            return true;
+        }
+
+        if (slot >= EQUIPMENT_SLOT_END)
+        {
+            handler->PSendSysMessage("槽位 {} 无效，范围 0-{}。", slot, uint32(EQUIPMENT_SLOT_END - 1));
+            return true;
+        }
+
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+        {
+            handler->PSendSysMessage("玩家 {} 的槽位 {}（{}）上没有装备。", playerName, slot,
+                ItemUpgrade::EquipmentSlotToString((EquipmentSlots)slot));
+            return true;
+        }
+
+        uint8 maxTier = sItemUpgrade->GetMaxTierNum(item->GetEntry());
+        uint8 tier = sItemUpgrade->MaxOutItem(player, item);
+        if (tier == 0)
+        {
+            handler->PSendSysMessage("{} 不支持升级（不在白名单/被拉黑，或无可升级项）。",
+                ItemUpgrade::ItemLink(player, item));
+            return true;
+        }
+
+        if (tier < maxTier)
+            handler->PSendSysMessage("{} 已升至品阶 {}，但未达最顶级 {}（阶梯缺档导致突破中断，检查配置）。",
+                ItemUpgrade::ItemLink(player, item), tier, maxTier);
+        else
+            handler->PSendSysMessage("{} 已直升到最顶级（品阶 {}/{}）。",
+                ItemUpgrade::ItemLink(player, item), tier, maxTier);
         return true;
     }
 

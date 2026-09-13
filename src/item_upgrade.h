@@ -286,7 +286,12 @@ public:
     bool CanPurchaseRankInTier(const ItemTier* tier, uint16 rank) const;
     bool IsCategoryMaxedInTier(const Player* player, const Item* item, const ItemTier* tier, bool checkWeaponDmg, bool checkWeaponSpd) const;
     bool CanBreakthrough(const Player* player, const Item* item) const;
-    bool PerformBreakthrough(Player* player, Item* item);
+    // skipCosts=true 时跳过材料校验与消耗（GM 直升用）
+    bool PerformBreakthrough(Player* player, Item* item, bool skipCosts = false);
+    // GM 直升：把装备升级线（属性/武器伤害）直接写到当前 tier 的 endRank
+    // （阶梯 pct 是绝对总加成，中间档无需逐档购买），再免费突破到下一 tier，循环至 maxTier。
+    // 攻速线不动（可选负收益线）。返回最终品阶号；0 = 装备不可升级。阶梯缺档突破不了时停在该品阶。
+    uint8 MaxOutItem(Player* player, Item* item);
     // 突破词条分流: 专属 tier 行(itemEntry!=0)原样返回行配词条; 全局行按装备模板属性
     // 匹配 _breakthroughEnchantRules(priority 高者胜), 无命中回落行配 breakthroughEnchantId
     uint32 ResolveBreakthroughEnchant(const Item* item, const ItemTier* tier) const;

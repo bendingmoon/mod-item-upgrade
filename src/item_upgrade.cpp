@@ -1127,6 +1127,10 @@ bool ItemUpgrade::IsValidWeaponForUpgrade(const Item* item, const Player* player
     if (proto->Quality == ITEM_QUALITY_HEIRLOOM)
         return false;
 
+    // 仅武器可升伤害: Delay/伤害字段可能被手工装备从武器模板误带(如 4 饰品 Delay=1000 事故)
+    if (proto->Class != ITEM_CLASS_WEAPON)
+        return false;
+
     if (item->IsBroken())
         return false;
 
@@ -1147,6 +1151,11 @@ bool ItemUpgrade::IsValidWeaponForSpeedUpgrade(const Item* item, const Player* p
 
     const ItemTemplate* proto = item->GetTemplate();
     if (proto->Quality == ITEM_QUALITY_HEIRLOOM)
+        return false;
+
+    // 仅武器可升攻速: 非武器走到下面 equipped 分支时 GetAttackBySlot 会返回 MAX_ATTACK,
+    // GetWeaponDamageRange 越界读 m_weaponDamage[3] 得到随机脏值(攻速行时隐时现的根因)
+    if (proto->Class != ITEM_CLASS_WEAPON)
         return false;
 
     if (!proto->Delay)
@@ -4636,7 +4645,7 @@ bool ItemUpgrade::CanBreakthrough(const Player* player, const Item* item) const
     return true;
 }
 
-bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
+bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item, bool skipCosts)
 {
     if (!CanBreakthrough(player, item))
     {
@@ -4649,14 +4658,14 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
         return false;
 
     // Verify the player has enough materials/gold before consuming
-    if (!nextTier->costs.empty() && !MeetsRequirement(player, &nextTier->costs))
+    if (!skipCosts && !nextTier->costs.empty() && !MeetsRequirement(player, &nextTier->costs))
     {
         SendMessage(player, "You don't have the required materials for breakthrough.");
         return false;
     }
 
     // Take all breakthrough costs
-    if (!nextTier->costs.empty())
+    if (!skipCosts && !nextTier->costs.empty())
         TakeRequirements(player, &nextTier->costs);
 
     // Update tier in database
@@ -4688,6 +4697,78 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item)
     SendMessage(player, "Item has broken through to " + nextTier->name + "!");
 
     return true;
+}
+
+uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
+{
+    if (!player || !item)
+        return 0;
+    if (!IsAllowedItem(item) || IsBlacklistedItem(item))
+        return 0;
+
+    bool statOk = IsValidItemForUpgrade(item, player);
+    bool dmgOk = IsValidWeaponForUpgrade(item, player);
+    if (!statOk && !dmgOk)
+        return 0;
+
+    uint8 maxTier = GetMaxTierNum(item->GetEntry());
+    if (maxTier == 0)
+        return 0;
+
+    for (uint32 guard = 0; guard < 32; ++guard)
+    {
+        const ItemTier* tier = GetCurrentTier(player, item);
+        if (!tier)
+            break;
+
+        // 属性线：直接写当前 tier 的 endRank（阶梯 pct 是绝对总加成，中间档无需逐档购买）
+        if (statOk)
+        {
+            for (const _ItemStat& stat : LoadItemTemplateStatInfo(item))
+            {
+                if (!IsStatTypeAllowedForItem(item, stat.ItemStatType) || !HasStatLadder(stat.ItemStatType))
+                    continue;
+                const UpgradeStat* cur = FindUpgradeForItem(player, item, stat.ItemStatType);
+                if (cur && cur->statRank >= tier->endRank)
+                    continue;
+                const UpgradeStat* target = FindUpgradeStat(stat.ItemStatType, tier->endRank);
+                if (target)
+                    HandlePurchaseRank(player, item, target);
+            }
+        }
+
+        // 武器伤害线
+        if (dmgOk)
+        {
+            const UpgradeStat* cur = FindUpgradeForWeaponDamage(player, item);
+            if (!cur || cur->statRank < tier->endRank)
+            {
+                const UpgradeStat* target = _FindUpgradeStat(weaponUpgradeStats,
+                    [&](const UpgradeStat& s) { return s.statRank == tier->endRank; });
+                if (target)
+                    HandlePurchaseWeaponUpgrade(player, item, target, false);
+            }
+        }
+
+        // 武器攻速线：可选线，直升不动（猛击流等 build 攻速是负收益，保持玩家原状）
+
+        if (tier->tier >= maxTier)
+            break;
+
+        // 免费突破；条件不满足（如某条线阶梯缺档）则停在该品阶
+        if (!PerformBreakthrough(player, item, true))
+            break;
+    }
+
+    // 购买/突破本身不动属性，最后一次性重算（词条不受升级百分比影响，无需逐档卸装）
+    if (item->IsEquipped())
+    {
+        player->_ApplyItemMods(item, item->GetSlot(), false);
+        player->_ApplyItemMods(item, item->GetSlot(), true);
+    }
+    VisualFeedback(player);
+
+    return GetCurrentTierNum(player, item);
 }
 
 const ItemUpgrade::ItemTier* ItemUpgrade::GetTierByNum(uint32 itemEntry, uint8 tierNum) const

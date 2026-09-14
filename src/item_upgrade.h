@@ -291,7 +291,8 @@ public:
     // GM 直升：把装备升级线（属性/武器伤害）直接写到当前 tier 的 endRank
     // （阶梯 pct 是绝对总加成，中间档无需逐档购买），再免费突破到下一 tier，循环至 maxTier。
     // 攻速线不动（可选负收益线）。返回最终品阶号；0 = 装备不可升级。阶梯缺档突破不了时停在该品阶。
-    uint8 MaxOutItem(Player* player, Item* item);
+    // outChanged 非空时回填：本次是否有实际变动（true=生效的升级，false=已是满级跳过）。
+    uint8 MaxOutItem(Player* player, Item* item, bool* outChanged = nullptr);
     // 突破词条分流: 专属 tier 行(itemEntry!=0)原样返回行配词条; 全局行按装备模板属性
     // 匹配 _breakthroughEnchantRules(priority 高者胜), 无命中回落行配 breakthroughEnchantId
     uint32 ResolveBreakthroughEnchant(const Item* item, const ItemTier* tier) const;

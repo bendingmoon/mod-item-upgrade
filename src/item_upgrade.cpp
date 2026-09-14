@@ -4699,8 +4699,11 @@ bool ItemUpgrade::PerformBreakthrough(Player* player, Item* item, bool skipCosts
     return true;
 }
 
-uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
+uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item, bool* outChanged)
 {
+    if (outChanged)
+        *outChanged = false;
+
     if (!player || !item)
         return 0;
     if (!IsAllowedItem(item) || IsBlacklistedItem(item))
@@ -4714,6 +4717,8 @@ uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
     uint8 maxTier = GetMaxTierNum(item->GetEntry());
     if (maxTier == 0)
         return 0;
+
+    bool changed = false;
 
     for (uint32 guard = 0; guard < 32; ++guard)
     {
@@ -4733,7 +4738,10 @@ uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
                     continue;
                 const UpgradeStat* target = FindUpgradeStat(stat.ItemStatType, tier->endRank);
                 if (target)
+                {
                     HandlePurchaseRank(player, item, target);
+                    changed = true;
+                }
             }
         }
 
@@ -4746,7 +4754,10 @@ uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
                 const UpgradeStat* target = _FindUpgradeStat(weaponUpgradeStats,
                     [&](const UpgradeStat& s) { return s.statRank == tier->endRank; });
                 if (target)
+                {
                     HandlePurchaseWeaponUpgrade(player, item, target, false);
+                    changed = true;
+                }
             }
         }
 
@@ -4756,7 +4767,9 @@ uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
             break;
 
         // 免费突破；条件不满足（如某条线阶梯缺档）则停在该品阶
-        if (!PerformBreakthrough(player, item, true))
+        if (PerformBreakthrough(player, item, true))
+            changed = true;
+        else
             break;
     }
 
@@ -4768,6 +4781,8 @@ uint8 ItemUpgrade::MaxOutItem(Player* player, Item* item)
     }
     VisualFeedback(player);
 
+    if (outChanged)
+        *outChanged = changed;
     return GetCurrentTierNum(player, item);
 }
 

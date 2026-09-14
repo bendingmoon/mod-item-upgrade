@@ -55,18 +55,25 @@ private:
     }
 
     // .item_upgrade max <玩家名> <装备槽0-18> — 指定槽位装备免费直升到最顶级（不扣金币/材料，不 roll 成功率）
+    // 末行固定输出机器可读行供 PHP 解析：
+    //   ITEM_UPGRADE_MAX|entry=<道具ID>|guid=<物品guid>|ok=<0/1>|changed=<0/1>|tier=<品阶>|maxtier=<最顶级>|reason=<原因>
+    //   ok=1 且 changed=1 = 生效的升级；ok=1 且 changed=0 = 已是满级跳过；ok=0 = 失败
+    //   reason: ok / already_maxed / partial(升了但缺档中断) / stuck(无变动且无法继续) /
+    //           not_upgradeable / no_item / bad_slot / offline
     static bool HandleMaxItemUpgrade(ChatHandler* handler, std::string playerName, uint32 slot)
     {
         Player* player = ObjectAccessor::FindPlayerByName(playerName, false);
         if (!player)
         {
             handler->PSendSysMessage("玩家 {} 不在线（该命令仅支持在线玩家）。", playerName);
+            handler->SendSysMessage("ITEM_UPGRADE_MAX|entry=0|guid=0|ok=0|changed=0|tier=0|maxtier=0|reason=offline");
             return true;
         }
 
         if (slot >= EQUIPMENT_SLOT_END)
         {
             handler->PSendSysMessage("槽位 {} 无效，范围 0-{}。", slot, uint32(EQUIPMENT_SLOT_END - 1));
+            handler->SendSysMessage("ITEM_UPGRADE_MAX|entry=0|guid=0|ok=0|changed=0|tier=0|maxtier=0|reason=bad_slot");
             return true;
         }
 
@@ -75,24 +82,41 @@ private:
         {
             handler->PSendSysMessage("玩家 {} 的槽位 {}（{}）上没有装备。", playerName, slot,
                 ItemUpgrade::EquipmentSlotToString((EquipmentSlots)slot));
+            handler->SendSysMessage("ITEM_UPGRADE_MAX|entry=0|guid=0|ok=0|changed=0|tier=0|maxtier=0|reason=no_item");
             return true;
         }
 
-        uint8 maxTier = sItemUpgrade->GetMaxTierNum(item->GetEntry());
-        uint8 tier = sItemUpgrade->MaxOutItem(player, item);
+        uint32 entry = item->GetEntry();
+        uint32 guidLow = item->GetGUID().GetCounter();
+        uint8 maxTier = sItemUpgrade->GetMaxTierNum(entry);
+
+        bool changed = false;
+        uint8 tier = sItemUpgrade->MaxOutItem(player, item, &changed);
+
+        bool ok = tier > 0 && tier == maxTier;
+        const char* reason = "ok";
         if (tier == 0)
-        {
+            reason = "not_upgradeable";
+        else if (tier == maxTier)
+            reason = changed ? "ok" : "already_maxed";
+        else
+            reason = changed ? "partial" : "stuck";
+
+        if (tier == 0)
             handler->PSendSysMessage("{} 不支持升级（不在白名单/被拉黑，或无可升级项）。",
                 ItemUpgrade::ItemLink(player, item));
-            return true;
-        }
-
-        if (tier < maxTier)
+        else if (tier == maxTier && !changed)
+            handler->PSendSysMessage("{} 已是满级（品阶 {}/{}），本次无变动。",
+                ItemUpgrade::ItemLink(player, item), tier, maxTier);
+        else if (tier < maxTier)
             handler->PSendSysMessage("{} 已升至品阶 {}，但未达最顶级 {}（阶梯缺档导致突破中断，检查配置）。",
                 ItemUpgrade::ItemLink(player, item), tier, maxTier);
         else
             handler->PSendSysMessage("{} 已直升到最顶级（品阶 {}/{}）。",
                 ItemUpgrade::ItemLink(player, item), tier, maxTier);
+
+        handler->PSendSysMessage("ITEM_UPGRADE_MAX|entry={}|guid={}|ok={}|changed={}|tier={}|maxtier={}|reason={}",
+            entry, guidLow, ok ? 1 : 0, changed ? 1 : 0, uint32(tier), uint32(maxTier), reason);
         return true;
     }
 
